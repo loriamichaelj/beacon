@@ -12,11 +12,18 @@ node_modules/
 dist/
 .vite/
 *.tsbuildinfo
+coverage/
 
 # Env
 .env
 .env.*
 !.env.example
+
+# Secrets
+*.pem
+*.key
+*.p12
+*.pfx
 
 # Reports
 reports/
@@ -24,5 +31,12 @@ reports/
 
 # Editor / OS
 .DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
 .vscode/
 .idea/
+
+# Local logs
+*.log
