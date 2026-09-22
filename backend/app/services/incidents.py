@@ -51,9 +51,7 @@ def apply_transition(
         return TransitionResult("mitigated", now, current_resolved_at, current_reopen_count)
 
     if current_status == "open" and new_status == "resolved":
-        return TransitionResult(
-            "resolved", current_mitigated_at or now, now, current_reopen_count
-        )
+        return TransitionResult("resolved", current_mitigated_at or now, now, current_reopen_count)
 
     if current_status == "mitigated" and new_status == "resolved":
         return TransitionResult("resolved", current_mitigated_at, now, current_reopen_count)
@@ -62,9 +60,7 @@ def apply_transition(
         return TransitionResult("open", None, None, current_reopen_count + 1)
 
     if current_status == "mitigated" and new_status == "open":
-        return TransitionResult(
-            "open", None, current_resolved_at, current_reopen_count + 1
-        )
+        return TransitionResult("open", None, current_resolved_at, current_reopen_count + 1)
 
     raise InvalidTransitionError(current_status, new_status)
 
@@ -99,8 +95,8 @@ async def list_incidents(
     session: AsyncSession,
     *,
     service_id: UUID | None,
-    statuses: list[str] | None,
-    severities: list[str] | None,
+    statuses: Sequence[str] | None,
+    severities: Sequence[str] | None,
     opened_after: datetime | None,
     opened_before: datetime | None,
     sort: str,

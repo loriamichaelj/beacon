@@ -65,9 +65,7 @@ export default function ServiceListPage() {
       {isLoading && <LoadingState label="Loading services…" />}
       {isError && <ErrorState message={errorMessage(error)} />}
 
-      {data && data.items.length === 0 && (
-        <EmptyState message="No services match your filters." />
-      )}
+      {data && data.items.length === 0 && <EmptyState message="No services match your filters." />}
 
       {data && data.items.length > 0 && (
         <>

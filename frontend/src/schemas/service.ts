@@ -7,9 +7,7 @@ export const serviceFormSchema = z.object({
     .string()
     .min(1, "Owner team is required.")
     .max(100, "Owner team must be 100 characters or fewer."),
-  runbook_url: z
-    .union([z.string().url("Must be a valid http(s) URL."), z.literal("")])
-    .optional(),
+  runbook_url: z.union([z.string().url("Must be a valid http(s) URL."), z.literal("")]).optional(),
   description: z.string().max(2000, "Description must be 2000 characters or fewer.").optional(),
 });
 

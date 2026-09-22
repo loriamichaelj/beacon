@@ -18,9 +18,7 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    op.execute(
-        "ALTER TABLE incidents ADD COLUMN reopen_count SMALLINT NOT NULL DEFAULT 0"
-    )
+    op.execute("ALTER TABLE incidents ADD COLUMN reopen_count SMALLINT NOT NULL DEFAULT 0")
     op.execute(
         """
         ALTER TABLE incidents ADD CONSTRAINT incidents_reopen_count_nonneg
@@ -66,8 +64,6 @@ def downgrade() -> None:
           )
         """
     )
-    op.execute(
-        "ALTER TABLE incidents DROP CONSTRAINT incidents_resolved_requires_mitigated"
-    )
+    op.execute("ALTER TABLE incidents DROP CONSTRAINT incidents_resolved_requires_mitigated")
     op.execute("ALTER TABLE incidents DROP CONSTRAINT incidents_reopen_count_nonneg")
     op.execute("ALTER TABLE incidents DROP COLUMN reopen_count")

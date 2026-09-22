@@ -2,11 +2,11 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from alembic import command
 from alembic.config import Config
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from alembic import command
 from app.config import get_settings
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
@@ -34,8 +34,7 @@ async def _table_names(dsn: str) -> set[str]:
         async with engine.connect() as conn:
             result = await conn.execute(
                 text(
-                    "SELECT table_name FROM information_schema.tables "
-                    "WHERE table_schema = 'public'"
+                    "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
                 )
             )
             return {row[0] for row in result}

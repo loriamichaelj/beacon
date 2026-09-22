@@ -8,7 +8,10 @@ interface RenderOptions {
   path?: string;
 }
 
-export function renderWithProviders(ui: ReactElement, { route = "/", path = "/" }: RenderOptions = {}) {
+export function renderWithProviders(
+  ui: ReactElement,
+  { route = "/", path = "/" }: RenderOptions = {},
+) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },

@@ -22,9 +22,7 @@ def test_healthz_returns_ok_without_touching_database(
     assert resp.json() == {"status": "ok"}
 
 
-def test_readyz_ok_when_database_up(
-    monkeypatch: pytest.MonkeyPatch, postgres_dsn: str
-) -> None:
+def test_readyz_ok_when_database_up(monkeypatch: pytest.MonkeyPatch, postgres_dsn: str) -> None:
     app = _make_app(monkeypatch, postgres_dsn)
     with TestClient(app) as client:
         resp = client.get("/readyz")

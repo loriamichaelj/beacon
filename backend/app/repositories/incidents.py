@@ -3,11 +3,11 @@ from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import ColumnElement, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 
 from app.models.incident import Incident
 from app.models.service import Service
-from sqlalchemy.ext.asyncio import AsyncSession
 
 SORT_FIELDS: dict[str, InstrumentedAttribute[object]] = {
     "opened_at": Incident.opened_at,
@@ -32,8 +32,8 @@ async def list_incidents(
     session: AsyncSession,
     *,
     service_id: UUID | None,
-    statuses: list[str] | None,
-    severities: list[str] | None,
+    statuses: Sequence[str] | None,
+    severities: Sequence[str] | None,
     opened_after: datetime | None,
     opened_before: datetime | None,
     sort: str,

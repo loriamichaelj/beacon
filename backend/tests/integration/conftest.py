@@ -1,13 +1,13 @@
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import Iterator
 
 import pytest
-from alembic import command
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from testcontainers.community.postgres import PostgresContainer
 
 import app.main as main_module
+from alembic import command
 from app.config import get_settings
 from tests.integration._alembic import alembic_config
 

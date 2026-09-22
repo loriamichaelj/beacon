@@ -58,12 +58,8 @@ def register_exception_handlers(app: FastAPI) -> None:
         return _problem(exc.status_code, exc.detail, str(request.url.path))
 
     @app.exception_handler(RequestValidationError)
-    async def validation_handler(
-        request: Request, exc: RequestValidationError
-    ) -> JSONResponse:
-        errors = [
-            {"loc": list(err["loc"]), "msg": err["msg"]} for err in exc.errors()
-        ]
+    async def validation_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+        errors = [{"loc": list(err["loc"]), "msg": err["msg"]} for err in exc.errors()]
         return _problem(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             "Request validation failed.",
@@ -72,9 +68,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(StarletteHTTPException)
-    async def http_exception_handler(
-        request: Request, exc: StarletteHTTPException
-    ) -> JSONResponse:
+    async def http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
         return _problem(exc.status_code, str(exc.detail), str(request.url.path))
 
     @app.exception_handler(Exception)

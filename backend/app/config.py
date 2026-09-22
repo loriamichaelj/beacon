@@ -20,15 +20,11 @@ class Settings(BaseSettings):
     db_pool_size: int = Field(default=5, alias="DB_POOL_SIZE")
     db_max_overflow: int = Field(default=5, alias="DB_MAX_OVERFLOW")
     db_statement_timeout_ms: int = Field(default=5000, alias="DB_STATEMENT_TIMEOUT_MS")
-    readiness_db_timeout_seconds: float = Field(
-        default=1.0, alias="READINESS_DB_TIMEOUT_SECONDS"
-    )
+    readiness_db_timeout_seconds: float = Field(default=1.0, alias="READINESS_DB_TIMEOUT_SECONDS")
     cors_allowed_origins: str = Field(default="", alias="CORS_ALLOWED_ORIGINS")
     app_version: str = Field(default="dev", alias="APP_VERSION")
     git_sha: str = Field(default="unknown", alias="GIT_SHA")
-    db_ssl: Literal["disable", "require", "verify-full"] = Field(
-        default="disable", alias="DB_SSL"
-    )
+    db_ssl: Literal["disable", "require", "verify-full"] = Field(default="disable", alias="DB_SSL")
     db_ssl_root_cert: str = Field(default="", alias="DB_SSL_ROOT_CERT")
 
     @model_validator(mode="after")

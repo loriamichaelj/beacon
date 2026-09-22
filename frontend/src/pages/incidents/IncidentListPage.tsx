@@ -80,9 +80,7 @@ export default function IncidentListPage() {
 
       {isLoading && <LoadingState label="Loading incidents…" />}
       {isError && <ErrorState message={errorMessage(error)} />}
-      {data && data.items.length === 0 && (
-        <EmptyState message="No incidents match your filters." />
-      )}
+      {data && data.items.length === 0 && <EmptyState message="No incidents match your filters." />}
 
       {data && data.items.length > 0 && (
         <>
