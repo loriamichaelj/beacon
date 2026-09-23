@@ -22,12 +22,12 @@ locals {
   n     = var.name_prefix
   iam_n = var.iam_name_prefix
 
-  arn_ec2  = "arn:${local.partition}:ec2:${var.region}:${local.account_id}"
-  arn_ssm  = "arn:${local.partition}:ssm:${var.region}:${local.account_id}"
-  arn_logs = "arn:${local.partition}:logs:${var.region}:${local.account_id}"
-  arn_elb  = "arn:${local.partition}:elasticloadbalancing:${var.region}:${local.account_id}"
-  arn_asg  = "arn:${local.partition}:autoscaling:${var.region}:${local.account_id}"
-  arn_rds  = "arn:${local.partition}:rds:${var.region}:${local.account_id}"
+  arn_ec2  = "arn:${local.partition}:ec2:${var.aws_region}:${local.account_id}"
+  arn_ssm  = "arn:${local.partition}:ssm:${var.aws_region}:${local.account_id}"
+  arn_logs = "arn:${local.partition}:logs:${var.aws_region}:${local.account_id}"
+  arn_elb  = "arn:${local.partition}:elasticloadbalancing:${var.aws_region}:${local.account_id}"
+  arn_asg  = "arn:${local.partition}:autoscaling:${var.aws_region}:${local.account_id}"
+  arn_rds  = "arn:${local.partition}:rds:${var.aws_region}:${local.account_id}"
 
   # Previous environment in the promotion chain, whose release-version the
   # preflight check reads (§7.1 step 5).
@@ -53,7 +53,7 @@ data "aws_iam_policy_document" "github_trust" {
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repository}:environment:${each.key}"]
+      values   = ["${var.github_oidc_sub_prefix}:environment:${each.key}"]
     }
   }
 }
@@ -333,7 +333,7 @@ data "aws_iam_policy_document" "env_compute" {
     condition {
       test     = "StringEquals"
       variable = "kms:ViaService"
-      values   = ["rds.${var.region}.amazonaws.com"]
+      values   = ["rds.${var.aws_region}.amazonaws.com"]
     }
   }
 }
@@ -448,7 +448,7 @@ data "aws_iam_policy_document" "env_pipeline" {
   statement {
     sid       = "MigratorRunCommandDocument"
     actions   = ["ssm:SendCommand"]
-    resources = ["arn:${local.partition}:ssm:${var.region}::document/AWS-RunShellScript"]
+    resources = ["arn:${local.partition}:ssm:${var.aws_region}::document/AWS-RunShellScript"]
   }
 
   statement {

@@ -159,7 +159,7 @@ Three GitHub Environments (`dev`, `stage`, `prod`, configured under repo Setting
   - `beacon-deploy-prod`
   - `beacon-deploy-shared` — network, DNS, and AMI; the only role that can touch the VPC, endpoints, hosted zone, or `/beacon/base-ami-id`
 
-Each role's trust policy requires `sub = repo:loriamichaelj/beacon:environment:<env>` — the OIDC subject GitHub issues when a job declares `environment: <env>`. A job can only obtain the role for the Environment it is running in, and stage/prod/shared jobs only get that far after the Environment's required-reviewer approval.
+Each role's trust policy requires `sub = repo:loriamichaelj@165821667/beacon@1382087094:environment:<env>`, the OIDC subject GitHub issues when a job declares `environment: <env>`. The repo uses GitHub's **immutable subject** format (`owner@owner-id/repo@repo-id`), so a repository deleted and recreated under the same name gets new IDs and cannot assume these roles. The prefix is set in `infra/project.env` (`GITHUB_OIDC_SUB_PREFIX`). A job can only obtain the role for the Environment it is running in, and stage/prod/shared jobs only get that far after the Environment's required-reviewer approval.
 
 Each role's IAM policy is scoped by resource tag/naming convention (`beacon-${environment}-*`) rather than being a blanket account-wide policy — this is what makes "same AWS account, three environments" actually safe. A workflow run that assumed the dev role cannot mutate any resource tagged for stage or prod, even if the workflow logic had a bug that tried to.
 

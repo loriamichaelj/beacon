@@ -1,7 +1,7 @@
-# region, name_prefix, and iam_name_prefix come from infra/project.env via
-# TF_VAR_* (set by the workflow), so they have no defaults here.
+# Everything here except state_bucket comes from infra/project.env via
+# TF_VAR_* (set by the workflow), so none of it has a default.
 
-variable "region" {
+variable "aws_region" {
   type = string
 }
 
@@ -20,10 +20,14 @@ variable "iam_name_prefix" {
   }
 }
 
-variable "github_repository" {
-  description = "owner/name of the repository whose GitHub Environments may assume the deploy roles."
+variable "github_oidc_sub_prefix" {
+  description = "OIDC sub claim prefix for this repo (immutable form: repo:owner@id/repo@id)."
   type        = string
-  default     = "loriamichaelj/beacon"
+
+  validation {
+    condition     = can(regex("^repo:[^@/]+@[0-9]+/[^@/]+@[0-9]+$", var.github_oidc_sub_prefix))
+    error_message = "Expected the immutable form repo:<owner>@<owner-id>/<repo>@<repo-id>."
+  }
 }
 
 variable "state_bucket" {
