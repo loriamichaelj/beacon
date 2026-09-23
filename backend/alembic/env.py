@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
 from app.config import get_settings
+from app.db import build_ssl_context
 from app.models import Base
 
 config = context.config
@@ -41,10 +42,13 @@ async def run_migrations_online() -> None:
     configuration = config.get_section(config.config_ini_section, {})
     configuration["sqlalchemy.url"] = get_url()
 
+    # Same TLS settings as the app engine, so DB_SSL=verify-full also applies
+    # to migrations (asyncpg's default is unverified "prefer").
     connectable = async_engine_from_config(
         configuration,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args={"ssl": build_ssl_context(get_settings())},
     )
 
     async with connectable.connect() as connection:

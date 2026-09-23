@@ -1,4 +1,4 @@
-.PHONY: db-up db-down migrate seed api web test lint build-web
+.PHONY: db-up db-down migrate seed api web test lint build-web version package
 
 db-up:
 	docker compose -f compose.dev.yml up -d
@@ -28,3 +28,11 @@ lint:
 
 build-web:
 	cd frontend && npm run build
+
+# Release packaging (docs/CLOUD-DEVOPS-DESIGN.md §7.1). Output: build/release/<version>/
+version:
+	@scripts/release/version.sh
+
+package:
+	scripts/release/package-backend.sh
+	scripts/release/package-frontend.sh

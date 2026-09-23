@@ -25,6 +25,9 @@ coverage/
 *.p12
 *.pfx
 
+# Release packaging output
+build/
+
 # Reports
 reports/
 .coverage

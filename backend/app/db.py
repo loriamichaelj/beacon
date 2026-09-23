@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import (
 from app.config import Settings
 
 
-def _build_ssl_context(settings: Settings) -> ssl.SSLContext | bool:
+def build_ssl_context(settings: Settings) -> ssl.SSLContext | bool:
     if settings.db_ssl == "disable":
         return False
     if settings.db_ssl == "require":
@@ -31,10 +31,10 @@ def create_engine(settings: Settings) -> AsyncEngine:
         "server_settings": {
             "statement_timeout": str(settings.db_statement_timeout_ms),
         },
+        # Always pass ssl explicitly: omitting it makes asyncpg fall back to
+        # "prefer", which silently negotiates unverified TLS.
+        "ssl": build_ssl_context(settings),
     }
-    ssl_context = _build_ssl_context(settings)
-    if ssl_context is not False:
-        connect_args["ssl"] = ssl_context
 
     return create_async_engine(
         settings.database_url.get_secret_value(),
