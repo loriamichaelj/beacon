@@ -82,7 +82,7 @@ def _incident_timestamps(
     if status == "mitigated":
         return opened_at + timedelta(minutes=random.randint(5, 120)), None
     # status == "resolved": mitigated_at is required whenever an incident is
-    # resolved (DESIGN.md §6.1 incidents_resolved_requires_mitigated).
+    # resolved (3T-APP-DESIGN.md §6.1 incidents_resolved_requires_mitigated).
     mitigated_at = opened_at + timedelta(minutes=random.randint(5, 60))
     resolved_at = mitigated_at + timedelta(minutes=random.randint(5, 180))
     return mitigated_at, resolved_at

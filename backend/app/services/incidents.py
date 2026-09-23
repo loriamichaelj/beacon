@@ -36,7 +36,7 @@ def apply_transition(
     new_status: str,
     now: datetime,
 ) -> TransitionResult:
-    """Pure incident-lifecycle state machine per DESIGN.md §7.
+    """Pure incident-lifecycle state machine per 3T-APP-DESIGN.md §7.
 
     Takes the current persisted state and the requested new status, and
     returns the status/timestamps/counter that should be persisted. Raises

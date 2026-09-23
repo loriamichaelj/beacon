@@ -49,7 +49,7 @@ def configure_logging(log_level: str) -> None:
     # uvicorn.access duplicates app.access (see observability_middleware in
     # main.py) but fires after the request_id contextvar has been reset, so
     # every line would log request_id: null with no structured fields.
-    # app.access is the documented access log (DESIGN.md §9); disable this one.
+    # app.access is the documented access log (3T-APP-DESIGN.md §9); disable this one.
     logging.getLogger("uvicorn.access").disabled = True
 
 

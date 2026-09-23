@@ -1,8 +1,38 @@
 # Design Doc: Beacon — Service Catalog & Incident Tracker
 
 **Author:** M.L.
-**Status:** Draft v1.3
+**Status:** v1.4 — Phase A (app build) implemented; Phase B not started
 **Scope:** Application tier only (React frontend, FastAPI backend, PostgreSQL schema), built and verified on **localhost**. The DevOps and cloud work (**GitHub Actions** CI/CD, **AWS** infrastructure, containers, deployment) happens in a later phase and is **out of scope** for this document. The exceptions are the Operational Contract in §11 and the CI-readiness rules in §13.1, which the application must honor so that phase has fixed targets to build against.
+
+---
+
+## Build Status (as of 2026-09-23)
+
+**Phase A is implemented on the `dev` branch.** Every checklist item in §15 is ticked, and all nine steps of the §14 plan are done. Phase B (containers, GitHub Actions, AWS) has not been started, and no Phase B artifacts exist in the repo.
+
+| Area | State |
+|---|---|
+| Backend (FastAPI, async SQLAlchemy) | Complete: services and incidents APIs, incident state machine, problem+json errors, JSON logging with request ID, `/healthz`, `/readyz`, `/metrics`, graceful SIGTERM handling |
+| Schema | Complete: two Alembic migrations (see §6.1) |
+| Seed script | Complete and idempotent (`python -m scripts.seed`) |
+| Frontend (React, Vite, TanStack Query) | Complete: all §10.1 routes, zod-validated forms, loading/empty/error states, delete confirmation |
+| Tests | Backend: 38 test functions (unit: state machine; integration: services API, incidents API, health, migration round-trip, seed) against testcontainers Postgres. Frontend: 12 Vitest tests across 4 files |
+| Tooling | `make lint` and `make build-web` verified today; lockfiles committed (`uv.lock`, `package-lock.json`) |
+| README | Written: setup, commands, env vars, pointer to §11 |
+
+**Verified on 2026-09-23:** `make lint` (ruff, ruff format, mypy strict on 26 source files, eslint, prettier) passes. The frontend tests pass (12 of 12) and `make build-web` produces `frontend/dist/`. The 11 backend unit tests pass. The Docker daemon was not running in that session, so the testcontainers-backed integration tests, coverage, and the "database stopped" health checks in §15 were **not re-run** that day. Their checkmarks reflect the earlier Phase A sign-off. Re-run `make test` with Docker up to reconfirm.
+
+**Deviations from the original design (all intentional):**
+- **Two migrations, not one.** The schema in §6.1 is the *combined* result of `29430f6acafd` (initial schema) and `f945c88052c9` (adds `reopen_count`, the `incidents_resolved_requires_mitigated` constraint, and the tightened `incidents_time_order`). The second migration backfills `mitigated_at` on any pre-existing resolved rows. Its `downgrade()` restores the earlier constraints.
+- **Package manager is npm** (`package-lock.json`), not pnpm.
+- **Local Postgres is on host port 5434**, not 5432 (see §12).
+- **`/readyz` during shutdown** returns `{"status":"not_ready","checks":{"shutdown":"in_progress"}}`. When the DB check fails it returns `{"status":"not_ready","checks":{"database":"failed"}}`. Both use status 503.
+- **`DB_SSL=require`** encrypts the connection but does not verify the server certificate or hostname. Only `verify-full` does, and it requires `DB_SSL_ROOT_CERT`. Use `verify-full` for RDS in Phase B.
+
+**Known follow-ups (none block Phase A):**
+- `app/errors.py` uses `HTTP_422_UNPROCESSABLE_ENTITY`, which Starlette now deprecates in favor of `HTTP_422_UNPROCESSABLE_CONTENT`. It emits a `StarletteDeprecationWarning` during tests.
+- Fresh-environment reachability (a clean checkout reaching a working app from the README alone) is deferred to Phase B's first run elsewhere, as noted in §15. The `≥ 85%` coverage target in §13 was not re-measured on 2026-09-23 (needs Docker).
+- Phase B work: Dockerfiles, GitHub Actions, IaC, AWS deployment, and observability wiring. Nothing is started.
 
 ---
 
@@ -35,8 +65,8 @@ The app is deliberately small but production-shaped: typed contracts, migrations
 
 | Phase | Scope | Environment | Exit criteria |
 |---|---|---|---|
-| **A — App build** (this doc) | Backend, frontend, schema, tests, local dev tooling | Localhost only: app processes run natively, Postgres runs via `compose.dev.yml` | Every item in §15 verified on localhost; `make lint` and `make test` pass |
-| **B — DevOps & Cloud** (separate effort) | Containerization, GitHub Actions CI/CD, AWS infrastructure as code, deployment, observability wiring | GitHub Actions + AWS | Defined separately |
+| **A — App build** (this doc) — **implemented** | Backend, frontend, schema, tests, local dev tooling | Localhost only: app processes run natively, Postgres runs via `compose.dev.yml` | Every item in §15 verified on localhost; `make lint` and `make test` pass |
+| **B — DevOps & Cloud** (separate effort) — **not started** | Containerization, GitHub Actions CI/CD, AWS infrastructure as code, deployment, observability wiring | GitHub Actions + AWS | Defined separately |
 
 Phase A decisions that affect Phase B are captured in §11 (Operational Contract) and §13.1 (CI readiness). The app must not hardcode anything AWS-specific (account IDs, regions, ARNs, endpoints). All environment differences come in through environment variables.
 
@@ -81,7 +111,7 @@ Repository name: `beacon`. Phase B will add `.github/workflows/`, `infra/`, and 
 ```
 beacon/
 ├── docs/
-│   └── DESIGN.md
+│   └── 3T-APP-DESIGN.md
 ├── README.md
 ├── Makefile                  # dev convenience targets (see §12)
 ├── compose.dev.yml           # local Postgres ONLY, for development
@@ -89,15 +119,17 @@ beacon/
 │   ├── pyproject.toml
 │   ├── alembic.ini
 │   ├── alembic/
-│   │   └── versions/
+│   │   └── versions/         # 29430f6acafd initial schema; f945c88052c9 reopen_count + lifecycle constraints
+│   ├── uv.lock
 │   ├── app/
 │   │   ├── main.py           # app factory, lifespan, middleware, routers
 │   │   ├── config.py         # pydantic-settings Settings
 │   │   ├── db.py             # async engine, session dependency
 │   │   ├── logging.py        # JSON logging, request-id context
+│   │   ├── metrics.py        # Prometheus metrics (beacon_* prefix)
 │   │   ├── errors.py         # problem+json handlers
 │   │   ├── models/           # SQLAlchemy ORM models
-│   │   ├── schemas/          # Pydantic request/response models
+│   │   ├── schemas/          # Pydantic request/response models (incl. pagination envelope)
 │   │   ├── repositories/     # DB access, no HTTP concerns
 │   │   ├── services/         # business rules (incident state machine)
 │   │   └── api/
@@ -112,6 +144,7 @@ beacon/
 │       └── integration/
 └── frontend/
     ├── package.json
+    ├── package-lock.json
     ├── vite.config.ts
     ├── index.html
     └── src/
@@ -119,16 +152,20 @@ beacon/
         ├── App.tsx
         ├── api/              # typed client + TanStack Query hooks
         ├── types/            # API types (mirror backend schemas)
-        ├── pages/
-        ├── components/
-        └── test/
+        ├── schemas/          # zod form schemas
+        ├── hooks/            # e.g. useDocumentTitle
+        ├── pages/            # services/ and incidents/
+        ├── components/       # Layout, ServiceForm, ConfirmDialog, AsyncState
+        └── test/             # MSW server, setup, render utils
 ```
 
 Layering rule for the backend: `api` → `services` → `repositories` → `models`. Routers contain no SQL, and repositories contain no HTTP exceptions.
 
 ## 6. Data Model
 
-### 6.1 Schema (target state of the initial Alembic migration)
+### 6.1 Schema (cumulative result of both Alembic migrations)
+
+The SQL below is the state after `alembic upgrade head`. `reopen_count`, `incidents_reopen_count_nonneg`, `incidents_resolved_requires_mitigated`, and the three-clause `incidents_time_order` were added by the second migration, `f945c88052c9`.
 
 ```sql
 CREATE TABLE services (
@@ -291,8 +328,8 @@ List filters: `service_id`, `status` (repeatable), `severity` (repeatable), `ope
 | Path | Purpose | Behavior |
 |---|---|---|
 | `GET /healthz` | Liveness | Returns `200 {"status":"ok"}` if the process can serve requests. **Must not touch the database or any dependency.** |
-| `GET /readyz` | Readiness | Runs `SELECT 1` with a hard timeout (`READINESS_DB_TIMEOUT_SECONDS`, default 1s). Returns `200 {"status":"ready","checks":{"database":"ok"}}` or `503` with the failing check. Also returns `503` while the app is shutting down. |
-| `GET /metrics` | Prometheus exposition | Request count and latency histogram by method, route template, and status; DB pool stats; build info (`version`, `git_sha`). All custom metric names use the `beacon_` prefix (e.g., `beacon_http_request_duration_seconds`). |
+| `GET /readyz` | Readiness | Runs `SELECT 1` with a hard timeout (`READINESS_DB_TIMEOUT_SECONDS`, default 1s). Returns `200 {"status":"ready","checks":{"database":"ok"}}` or `503 {"status":"not_ready","checks":{"database":"failed"}}`. Also returns `503 {"status":"not_ready","checks":{"shutdown":"in_progress"}}` while the app is shutting down. |
+| `GET /metrics` | Prometheus exposition | Request count and latency histogram by method, route template, and status; DB pool stats (`beacon_db_pool_size`, `beacon_db_pool_checked_out`); build info (`beacon_build_info`, labeled `version` and `git_sha`). All custom metric names use the `beacon_` prefix (e.g., `beacon_http_request_duration_seconds`). |
 
 Health, readiness, and metrics requests are excluded from access logs and from request metrics to avoid noise.
 
@@ -366,7 +403,7 @@ This is what the platform side can rely on. The application must satisfy every i
 | `READINESS_DB_TIMEOUT_SECONDS` | No | `1.0` | |
 | `CORS_ALLOWED_ORIGINS` | No | empty | Comma-separated list |
 | `APP_VERSION` / `GIT_SHA` | No | `dev` / `unknown` | Exposed in build-info metric and logs |
-| `DB_SSL` | No | `disable` | One of `disable`, `require`, `verify-full`. Local dev uses `disable`. Phase B sets `require` or `verify-full` for Amazon RDS for PostgreSQL. |
+| `DB_SSL` | No | `disable` | One of `disable`, `require`, `verify-full`. Local dev uses `disable`. Phase B sets `require` or `verify-full` for Amazon RDS for PostgreSQL. `require` encrypts but does not verify the certificate; prefer `verify-full`. |
 | `DB_SSL_ROOT_CERT` | No | empty | Path to a CA bundle (e.g., the RDS global bundle). Required when `DB_SSL=verify-full`. |
 
 **TLS note:** asyncpg does **not** honor libpq's `sslmode` query parameter. Build an `ssl.SSLContext` from `DB_SSL` / `DB_SSL_ROOT_CERT` and pass it via `connect_args`. Also check your RDS parameter group: `rds.force_ssl` is enabled by default on recent RDS for PostgreSQL major versions, so plaintext connections will be rejected there.
@@ -419,17 +456,17 @@ No workflows are written in Phase A, but the project must be trivially runnable 
 
 ## 14. Implementation Plan
 
-Build in this order. Each phase must pass its checks before starting the next.
+Build in this order. Each phase must pass its checks before starting the next. **All nine steps are complete.**
 
-1. **Scaffold.** Repo layout, tooling configs, Makefile, `compose.dev.yml`, `.env.example` files. *Done when* `make lint` passes on the empty skeleton.
-2. **Backend foundation.** Settings, logging with request ID, problem+json error handlers, DB engine and lifespan, `/healthz`, `/readyz`, `/metrics`. *Done when* health tests pass, including readiness failure with the DB down.
-3. **Schema.** Initial Alembic migration implementing §6 exactly, plus the migration round-trip test. *Done when* constraints are verified by integration tests.
-4. **Services API.** Full CRUD per §8.2, with tests.
-5. **Incidents API.** Full CRUD per §8.3, state machine per §7, with tests.
-6. **Seed script.**
-7. **Frontend.** API client, then services pages, then incidents pages, with tests.
-8. **README.** Setup, commands, env vars, and a pointer to the Operational Contract.
-9. **Phase A sign-off.** Run through §15 on localhost. This ends Phase A; stop here. GitHub Actions and AWS work begins as a separate effort.
+1. ✅ **Scaffold.** Repo layout, tooling configs, Makefile, `compose.dev.yml`, `.env.example` files. *Done when* `make lint` passes on the empty skeleton.
+2. ✅ **Backend foundation.** Settings, logging with request ID, problem+json error handlers, DB engine and lifespan, `/healthz`, `/readyz`, `/metrics`. *Done when* health tests pass, including readiness failure with the DB down.
+3. ✅ **Schema.** Initial Alembic migration implementing §6 exactly, plus the migration round-trip test. *Done when* constraints are verified by integration tests.
+4. ✅ **Services API.** Full CRUD per §8.2, with tests.
+5. ✅ **Incidents API.** Full CRUD per §8.3, state machine per §7, with tests.
+6. ✅ **Seed script.**
+7. ✅ **Frontend.** API client, then services pages, then incidents pages, with tests.
+8. ✅ **README.** Setup, commands, env vars, and a pointer to the Operational Contract.
+9. ✅ **Phase A sign-off.** Run through §15 on localhost. This ends Phase A; stop here. GitHub Actions and AWS work begins as a separate effort.
 
 ## 15. Acceptance Criteria
 

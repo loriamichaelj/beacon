@@ -9,8 +9,8 @@ both resources.
 This repository currently covers **Phase A: the application itself**,
 built and verified on localhost. Containers, CI/CD, and AWS
 infrastructure are a separate later phase. See
-[`docs/DESIGN.md`](docs/DESIGN.md) for the full design, including the
-[Operational Contract](docs/DESIGN.md#11-operational-contract) that
+[`docs/3T-APP-DESIGN.md`](docs/3T-APP-DESIGN.md) for the full design, including the
+[Operational Contract](docs/3T-APP-DESIGN.md#11-operational-contract) that
 phase will build against.
 
 ## Stack
@@ -84,7 +84,7 @@ variables in an `.env.example`:
 
 - [`backend/.env.example`](backend/.env.example) - `DATABASE_URL`,
   pool/timeout tuning, `DB_SSL*`, `CORS_ALLOWED_ORIGINS`, etc. Full
-  reference: [DESIGN.md §11](docs/DESIGN.md#11-operational-contract).
+  reference: [3T-APP-DESIGN.md §11](docs/3T-APP-DESIGN.md#11-operational-contract).
 - [`frontend/.env.example`](frontend/.env.example) - `VITE_API_BASE_URL`
   (defaults to the same-origin relative `/api/v1`).
 
@@ -105,11 +105,11 @@ versioned API and are excluded from that schema:
 
 ```
 beacon/
-├── docs/DESIGN.md      # full design doc
+├── docs/3T-APP-DESIGN.md  # full design doc
 ├── compose.dev.yml     # local Postgres only - not a deployment artifact
 ├── backend/            # FastAPI app, Alembic migrations, tests
 └── frontend/           # React + Vite SPA
 ```
 
-See [DESIGN.md §5](docs/DESIGN.md#5-repository-layout) for the full
+See [3T-APP-DESIGN.md §5](docs/3T-APP-DESIGN.md#5-repository-layout) for the full
 backend/frontend layout and layering rules.

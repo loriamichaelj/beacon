@@ -63,7 +63,7 @@ export interface IncidentUpdateInput {
   status?: IncidentStatus;
 }
 
-/** Valid next statuses per DESIGN.md §7, keyed by current status. */
+/** Valid next statuses per 3T-APP-DESIGN.md §7, keyed by current status. */
 export const VALID_TRANSITIONS: Record<IncidentStatus, IncidentStatus[]> = {
   open: ["mitigated", "resolved"],
   mitigated: ["open", "resolved"],
