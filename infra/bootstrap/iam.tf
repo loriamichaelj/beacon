@@ -1,12 +1,14 @@
 # Deploy roles assumed by GitHub Actions via OIDC (docs/CLOUD-DEVOPS-DESIGN.md §5.2).
 #
-#   beacon-deploy-{dev,stage,prod}  per-environment infra + releases
-#   beacon-deploy-shared            network, DNS, AMI (account-wide)
+#   <iam_name_prefix>-deploy-{dev,stage,prod}  per-environment infra + releases
+#   <iam_name_prefix>-deploy-shared            network, DNS, AMI (account-wide)
 #
 # Each role trusts exactly one GitHub Environment. Permissions are scoped by
 # name pattern where the service supports resource ARNs, and by the
-# Environment tag where only IDs exist (EC2). Read-only Describe/List calls
-# are the only unscoped actions.
+# Environment + Project tags where only IDs exist (EC2). The account is
+# shared, so every tag condition checks Project too: another project's
+# Environment=dev resources must stay out of reach. Read-only Describe/List
+# calls are the only unscoped actions.
 #
 # Policy size: managed policies cap at 6,144 characters, so each role's
 # permissions are split across several policies by concern.
@@ -15,6 +17,10 @@ locals {
   tfstate_arn  = "arn:${local.partition}:s3:::${var.state_bucket}"
   releases_arn = "arn:${local.partition}:s3:::${local.releases_bucket}"
   iam_prefix   = "arn:${local.partition}:iam::${local.account_id}"
+
+  # n: resource names/paths; iam_n: IAM names (see infra/project.env).
+  n     = var.name_prefix
+  iam_n = var.iam_name_prefix
 
   arn_ec2  = "arn:${local.partition}:ec2:${var.region}:${local.account_id}"
   arn_ssm  = "arn:${local.partition}:ssm:${var.region}:${local.account_id}"
@@ -58,7 +64,7 @@ data "aws_iam_policy_document" "github_trust" {
 # could grant itself anything.
 
 resource "aws_iam_policy" "instance_boundary" {
-  name        = "beacon-instance-boundary"
+  name        = "${local.iam_n}-instance-boundary"
   description = "Upper bound on permissions for Beacon EC2 instance roles."
   policy      = data.aws_iam_policy_document.instance_boundary.json
 }
@@ -86,7 +92,7 @@ data "aws_iam_policy_document" "instance_boundary" {
   statement {
     sid       = "ReadBeaconParameters"
     actions   = ["ssm:GetParameter", "ssm:GetParameters"]
-    resources = ["${local.arn_ssm}:parameter/beacon/*"]
+    resources = ["${local.arn_ssm}:parameter/${local.n}/*"]
   }
 
   statement {
@@ -102,7 +108,7 @@ data "aws_iam_policy_document" "instance_boundary" {
       "logs:PutLogEvents",
       "logs:DescribeLogStreams",
     ]
-    resources = ["${local.arn_logs}:log-group:/beacon/*"]
+    resources = ["${local.arn_logs}:log-group:/${local.n}/*"]
   }
 
   statement {
@@ -121,7 +127,7 @@ data "aws_iam_policy_document" "instance_boundary" {
 resource "aws_iam_role" "env" {
   for_each = local.app_environments
 
-  name                 = "beacon-deploy-${each.key}"
+  name                 = "${local.iam_n}-deploy-${each.key}"
   description          = "GitHub Actions (Environment ${each.key}): infra/env Terraform, deploys, rollbacks."
   assume_role_policy   = data.aws_iam_policy_document.github_trust[each.key].json
   max_session_duration = 3600
@@ -132,7 +138,7 @@ resource "aws_iam_role" "env" {
 resource "aws_iam_policy" "env_compute" {
   for_each = local.app_environments
 
-  name   = "beacon-deploy-${each.key}-compute"
+  name   = "${local.iam_n}-deploy-${each.key}-compute"
   policy = data.aws_iam_policy_document.env_compute[each.key].json
   tags   = { Environment = each.key }
 }
@@ -140,7 +146,7 @@ resource "aws_iam_policy" "env_compute" {
 resource "aws_iam_policy" "env_services" {
   for_each = local.app_environments
 
-  name   = "beacon-deploy-${each.key}-services"
+  name   = "${local.iam_n}-deploy-${each.key}-services"
   policy = data.aws_iam_policy_document.env_services[each.key].json
   tags   = { Environment = each.key }
 }
@@ -148,7 +154,7 @@ resource "aws_iam_policy" "env_services" {
 resource "aws_iam_policy" "env_pipeline" {
   for_each = local.app_environments
 
-  name   = "beacon-deploy-${each.key}-pipeline"
+  name   = "${local.iam_n}-deploy-${each.key}-pipeline"
   policy = data.aws_iam_policy_document.env_pipeline[each.key].json
   tags   = { Environment = each.key }
 }
@@ -203,6 +209,11 @@ data "aws_iam_policy_document" "env_compute" {
       variable = "aws:RequestTag/Environment"
       values   = [each.key]
     }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/Project"
+      values   = [local.n]
+    }
   }
 
   statement {
@@ -241,6 +252,11 @@ data "aws_iam_policy_document" "env_compute" {
       variable = "aws:ResourceTag/Environment"
       values   = [each.key]
     }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Project"
+      values   = [local.n]
+    }
   }
 
   statement {
@@ -252,7 +268,7 @@ data "aws_iam_policy_document" "env_compute" {
       "iam:AttachRolePolicy",
       "iam:DetachRolePolicy",
     ]
-    resources = ["${local.iam_prefix}:role/beacon-${each.key}-*"]
+    resources = ["${local.iam_prefix}:role/${local.iam_n}-${each.key}-*"]
     condition {
       test     = "StringEquals"
       variable = "iam:PermissionsBoundary"
@@ -275,19 +291,19 @@ data "aws_iam_policy_document" "env_compute" {
       "iam:ListAttachedRolePolicies",
       "iam:ListInstanceProfilesForRole",
     ]
-    resources = ["${local.iam_prefix}:role/beacon-${each.key}-*"]
+    resources = ["${local.iam_prefix}:role/${local.iam_n}-${each.key}-*"]
   }
 
   statement {
     sid       = "InstanceProfile"
     actions   = ["iam:*InstanceProfile*", "iam:GetInstanceProfile"]
-    resources = ["${local.iam_prefix}:instance-profile/beacon-${each.key}-*"]
+    resources = ["${local.iam_prefix}:instance-profile/${local.iam_n}-${each.key}-*"]
   }
 
   statement {
     sid       = "PassInstanceRoleToEc2"
     actions   = ["iam:PassRole"]
-    resources = ["${local.iam_prefix}:role/beacon-${each.key}-*"]
+    resources = ["${local.iam_prefix}:role/${local.iam_n}-${each.key}-*"]
     condition {
       test     = "StringEquals"
       variable = "iam:PassedToService"
@@ -322,7 +338,7 @@ data "aws_iam_policy_document" "env_compute" {
   }
 }
 
-# ALB, ASG, RDS, SSM parameters, and log groups: all name-scoped to beacon-<env>-*.
+# ALB, ASG, RDS, SSM parameters, and log groups: all name-scoped to <name_prefix>-<env>-*.
 data "aws_iam_policy_document" "env_services" {
   for_each = local.app_environments
 
@@ -330,27 +346,27 @@ data "aws_iam_policy_document" "env_services" {
     sid     = "LoadBalancer"
     actions = ["elasticloadbalancing:*"]
     resources = [
-      "${local.arn_elb}:loadbalancer/app/beacon-${each.key}-*/*",
-      "${local.arn_elb}:targetgroup/beacon-${each.key}-*/*",
-      "${local.arn_elb}:listener/app/beacon-${each.key}-*/*",
-      "${local.arn_elb}:listener-rule/app/beacon-${each.key}-*/*",
+      "${local.arn_elb}:loadbalancer/app/${local.n}-${each.key}-*/*",
+      "${local.arn_elb}:targetgroup/${local.n}-${each.key}-*/*",
+      "${local.arn_elb}:listener/app/${local.n}-${each.key}-*/*",
+      "${local.arn_elb}:listener-rule/app/${local.n}-${each.key}-*/*",
     ]
   }
 
   statement {
     sid       = "AutoScaling"
     actions   = ["autoscaling:*"]
-    resources = ["${local.arn_asg}:autoScalingGroup:*:autoScalingGroupName/beacon-${each.key}-*"]
+    resources = ["${local.arn_asg}:autoScalingGroup:*:autoScalingGroupName/${local.n}-${each.key}-*"]
   }
 
   statement {
     sid     = "Database"
     actions = ["rds:*"]
     resources = [
-      "${local.arn_rds}:db:beacon-${each.key}-*",
-      "${local.arn_rds}:subgrp:beacon-${each.key}-*",
-      "${local.arn_rds}:pg:beacon-${each.key}-*",
-      "${local.arn_rds}:snapshot:beacon-${each.key}-*",
+      "${local.arn_rds}:db:${local.n}-${each.key}-*",
+      "${local.arn_rds}:subgrp:${local.n}-${each.key}-*",
+      "${local.arn_rds}:pg:${local.n}-${each.key}-*",
+      "${local.arn_rds}:snapshot:${local.n}-${each.key}-*",
     ]
   }
 
@@ -367,16 +383,16 @@ data "aws_iam_policy_document" "env_services" {
       "ssm:RemoveTagsFromResource",
       "ssm:ListTagsForResource",
     ]
-    resources = ["${local.arn_ssm}:parameter/beacon/${each.key}/*"]
+    resources = ["${local.arn_ssm}:parameter/${local.n}/${each.key}/*"]
   }
 
   statement {
     sid     = "ReadSharedParameters"
     actions = ["ssm:GetParameter", "ssm:GetParameters"]
     resources = concat(
-      ["${local.arn_ssm}:parameter/beacon/base-ami-id"],
+      ["${local.arn_ssm}:parameter/${local.n}/base-ami-id"],
       local.upstream_environment[each.key] == null ? [] : [
-        "${local.arn_ssm}:parameter/beacon/${local.upstream_environment[each.key]}/release-version",
+        "${local.arn_ssm}:parameter/${local.n}/${local.upstream_environment[each.key]}/release-version",
       ],
     )
   }
@@ -385,8 +401,8 @@ data "aws_iam_policy_document" "env_services" {
     sid     = "LogGroups"
     actions = ["logs:*"]
     resources = [
-      "${local.arn_logs}:log-group:/beacon/${each.key}/*",
-      "${local.arn_logs}:log-group:/beacon/${each.key}/*:*",
+      "${local.arn_logs}:log-group:/${local.n}/${each.key}/*",
+      "${local.arn_logs}:log-group:/${local.n}/${each.key}/*:*",
     ]
   }
 }
@@ -444,6 +460,11 @@ data "aws_iam_policy_document" "env_pipeline" {
       variable = "ssm:resourceTag/Environment"
       values   = [each.key]
     }
+    condition {
+      test     = "StringEquals"
+      variable = "ssm:resourceTag/Project"
+      values   = [local.n]
+    }
   }
 
   statement {
@@ -462,14 +483,14 @@ data "aws_iam_policy_document" "env_pipeline" {
 # introduce those roots; bootstrap.yml re-applies this file.
 
 resource "aws_iam_role" "shared" {
-  name                 = "beacon-deploy-shared"
+  name                 = "${local.iam_n}-deploy-shared"
   description          = "GitHub Actions (Environment shared): network, DNS, AMI."
   assume_role_policy   = data.aws_iam_policy_document.github_trust["shared"].json
   max_session_duration = 3600
 }
 
 resource "aws_iam_policy" "shared_network" {
-  name   = "beacon-deploy-shared-network"
+  name   = "${local.iam_n}-deploy-shared-network"
   policy = data.aws_iam_policy_document.shared_network.json
 }
 
@@ -501,6 +522,11 @@ data "aws_iam_policy_document" "shared_network" {
       variable = "aws:RequestTag/Environment"
       values   = ["shared"]
     }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/Project"
+      values   = [local.n]
+    }
   }
 
   statement {
@@ -523,7 +549,7 @@ data "aws_iam_policy_document" "shared_network" {
 
   # Everything the network root does to resources it already owns: routes,
   # associations, attachments, attribute changes, deletes. Bounded by the
-  # Environment=shared tag, which only this role can set.
+  # Environment=shared + Project tags, which only this role can set.
   statement {
     sid       = "NetworkManageOwn"
     actions   = ["ec2:*"]
@@ -532,6 +558,11 @@ data "aws_iam_policy_document" "shared_network" {
       test     = "StringEquals"
       variable = "aws:ResourceTag/Environment"
       values   = ["shared"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Project"
+      values   = [local.n]
     }
   }
 
@@ -556,7 +587,7 @@ data "aws_iam_policy_document" "shared_network" {
       "ssm:AddTagsToResource",
       "ssm:ListTagsForResource",
     ]
-    resources = ["${local.arn_ssm}:parameter/beacon/base-ami-id"]
+    resources = ["${local.arn_ssm}:parameter/${local.n}/base-ami-id"]
   }
 
   statement {

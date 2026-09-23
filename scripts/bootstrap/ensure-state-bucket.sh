@@ -8,9 +8,11 @@
 # protected from its very first write. Safe to re-run.
 set -euo pipefail
 
+# Both come from infra/project.env, loaded by the workflow.
 REGION="${AWS_REGION:?AWS_REGION must be set}"
+NAME_PREFIX="${NAME_PREFIX:?NAME_PREFIX must be set}"
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
-BUCKET="beacon-tfstate-${ACCOUNT_ID}"
+BUCKET="${NAME_PREFIX}-tfstate-${ACCOUNT_ID}"
 
 if aws s3api head-bucket --bucket "${BUCKET}" 2>/dev/null; then
   echo "State bucket ${BUCKET} already exists." >&2

@@ -2,23 +2,23 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "BeaconBuckets",
+      "Sid": "ProjectBuckets",
       "Effect": "Allow",
       "Action": "s3:*",
       "Resource": [
-        "arn:aws:s3:::beacon-tfstate-<ACCOUNT_ID>",
-        "arn:aws:s3:::beacon-tfstate-<ACCOUNT_ID>/*",
-        "arn:aws:s3:::beacon-releases-<ACCOUNT_ID>",
-        "arn:aws:s3:::beacon-releases-<ACCOUNT_ID>/*"
+        "arn:aws:s3:::loria-beacon-tfstate-<ACCOUNT_ID>",
+        "arn:aws:s3:::loria-beacon-tfstate-<ACCOUNT_ID>/*",
+        "arn:aws:s3:::loria-beacon-releases-<ACCOUNT_ID>",
+        "arn:aws:s3:::loria-beacon-releases-<ACCOUNT_ID>/*"
       ]
     },
     {
-      "Sid": "NeverDeleteBeaconBuckets",
+      "Sid": "NeverDeleteProjectBuckets",
       "Effect": "Deny",
       "Action": "s3:DeleteBucket",
       "Resource": [
-        "arn:aws:s3:::beacon-tfstate-<ACCOUNT_ID>",
-        "arn:aws:s3:::beacon-releases-<ACCOUNT_ID>"
+        "arn:aws:s3:::loria-beacon-tfstate-<ACCOUNT_ID>",
+        "arn:aws:s3:::loria-beacon-releases-<ACCOUNT_ID>"
       ]
     },
     {
@@ -40,16 +40,16 @@
         "iam:DetachRolePolicy",
         "iam:ListInstanceProfilesForRole"
       ],
-      "Resource": "arn:aws:iam::<ACCOUNT_ID>:role/beacon-deploy-*"
+      "Resource": "arn:aws:iam::<ACCOUNT_ID>:role/cloudbatch818-loria-beacon-deploy-*"
     },
     {
-      "Sid": "AttachOnlyBeaconDeployPolicies",
+      "Sid": "AttachOnlyProjectDeployPolicies",
       "Effect": "Allow",
       "Action": "iam:AttachRolePolicy",
-      "Resource": "arn:aws:iam::<ACCOUNT_ID>:role/beacon-deploy-*",
+      "Resource": "arn:aws:iam::<ACCOUNT_ID>:role/cloudbatch818-loria-beacon-deploy-*",
       "Condition": {
         "ArnLike": {
-          "iam:PolicyARN": "arn:aws:iam::<ACCOUNT_ID>:policy/beacon-deploy-*"
+          "iam:PolicyARN": "arn:aws:iam::<ACCOUNT_ID>:policy/cloudbatch818-loria-beacon-deploy-*"
         }
       }
     },
@@ -71,8 +71,8 @@
         "iam:ListEntitiesForPolicy"
       ],
       "Resource": [
-        "arn:aws:iam::<ACCOUNT_ID>:policy/beacon-deploy-*",
-        "arn:aws:iam::<ACCOUNT_ID>:policy/beacon-instance-boundary"
+        "arn:aws:iam::<ACCOUNT_ID>:policy/cloudbatch818-loria-beacon-deploy-*",
+        "arn:aws:iam::<ACCOUNT_ID>:policy/cloudbatch818-loria-beacon-instance-boundary"
       ]
     },
     {

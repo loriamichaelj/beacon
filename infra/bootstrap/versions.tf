@@ -21,7 +21,7 @@ provider "aws" {
 
   default_tags {
     tags = {
-      Project     = "beacon"
+      Project     = var.name_prefix
       Environment = "shared"
       ManagedBy   = "terraform"
       Stack       = "bootstrap"

@@ -167,13 +167,26 @@ Each role's IAM policy is scoped by resource tag/naming convention (`beacon-${en
 
 ### 5.3 Resource naming convention
 
+**The AWS account is shared with other projects**, so every name carries a project prefix, set once in `infra/project.env`:
+
+| Prefix | Value | Used for |
+|---|---|---|
+| `NAME_PREFIX` | `loria-beacon` | S3 buckets, ALB/target group/ASG/RDS names, SSM parameter paths, log groups, the `Project` tag |
+| `IAM_NAME_PREFIX` | `cloudbatch818-loria-beacon` | IAM roles, policies, instance profiles (the account requires IAM role names to start with `cloudbatch818-`) |
+
+There are two prefixes because ALB and target group names are limited to 32 characters. `cloudbatch818-loria-beacon-prod-alb` would be 35.
+
 Every resource created by Terraform includes the environment in its name and as a tag:
 ```
-beacon-${environment}-alb
-beacon-${environment}-asg
-beacon-${environment}-rds
+loria-beacon-${environment}-alb
+loria-beacon-${environment}-asg
+loria-beacon-${environment}-rds
+cloudbatch818-loria-beacon-${environment}-instance     (IAM role + instance profile)
+/loria-beacon/${environment}/release-version           (SSM)
 ```
-Tags applied to every resource: `Environment=${environment}`, `Project=beacon`, `ManagedBy=terraform`. This naming convention is what IAM policy scoping (§5.2) keys off of, and what prevents naming collisions between environments sharing an account.
+Tags applied to every resource: `Environment=${environment}`, `Project=loria-beacon`, `ManagedBy=terraform`. IAM policy scoping (§5.2) relies on this convention, and it prevents name collisions between environments and with other projects in the account. Every tag-based IAM condition checks **both** `Environment` and `Project`; another project's `Environment=dev` resources must not be reachable by this project's dev role.
+
+**Shorthand in this document:** the sections below still write `beacon-…` names, `/beacon/…` paths, and role names like `beacon-deploy-dev` for readability. Read `beacon-` as `loria-beacon-` for resource names and paths, and as `cloudbatch818-loria-beacon-` for IAM names.
 
 ## 6. Infrastructure Strategy
 
@@ -528,3 +541,4 @@ Given a target `environment` and a target `version` (defaulting to "the previous
 | 8 | S3-native state locking instead of DynamoDB. | DynamoDB locking is deprecated in current Terraform. | DynamoDB lock table (v1 §2) |
 | 9 | ALB SG allows 443 as well as 80; interface endpoints live in dedicated shared subnets (§6.2, §6.3). | v1's SG table omitted 443; endpoints needed a home that isn't any one environment's subnets. | — |
 | 10 | `/metrics` is not exposed through the ALB (§6.4). | It would otherwise be public. | — |
+| 11 | All names carry a project prefix: `loria-beacon` for resources, `cloudbatch818-loria-beacon` for IAM (§5.3). Tag-based IAM conditions check `Project` as well as `Environment`. | The AWS account is shared, and its IAM roles must start with `cloudbatch818-`. | Bare `beacon-*` names and `Project=beacon` |

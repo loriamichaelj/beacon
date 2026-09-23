@@ -1,11 +1,11 @@
 # Account-wide foundations (docs/CLOUD-DEVOPS-DESIGN.md §5.2). Applied only by
-# bootstrap.yml, using the manually created beacon-bootstrap role.
+# bootstrap.yml, using the manually created bootstrap role.
 
 data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 
-# Created by hand along with beacon-bootstrap (infra/bootstrap/README.md);
-# read here, never managed.
+# Exists once per account (it may predate this project); read here, never
+# managed, since other projects in the shared account may rely on it.
 data "aws_iam_openid_connect_provider" "github" {
   url = "https://token.actions.githubusercontent.com"
 }
@@ -16,7 +16,7 @@ locals {
 
   app_environments = toset(["dev", "stage", "prod"])
 
-  releases_bucket = "beacon-releases-${local.account_id}"
+  releases_bucket = "${var.name_prefix}-releases-${local.account_id}"
 }
 
 # --- Terraform state bucket -------------------------------------------------
@@ -80,7 +80,7 @@ resource "aws_s3_bucket_policy" "tfstate" {
 }
 
 # --- Release artifacts bucket -----------------------------------------------
-# s3://beacon-releases-<acct>/<version>/{backend-image.tar,frontend.tar.gz}
+# s3://<name_prefix>-releases-<acct>/<version>/{backend-image.tar,frontend.tar.gz}
 
 resource "aws_s3_bucket" "releases" {
   bucket = local.releases_bucket
