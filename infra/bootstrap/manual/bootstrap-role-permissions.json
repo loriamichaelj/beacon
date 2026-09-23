@@ -1,0 +1,88 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "BeaconBuckets",
+      "Effect": "Allow",
+      "Action": "s3:*",
+      "Resource": [
+        "arn:aws:s3:::beacon-tfstate-<ACCOUNT_ID>",
+        "arn:aws:s3:::beacon-tfstate-<ACCOUNT_ID>/*",
+        "arn:aws:s3:::beacon-releases-<ACCOUNT_ID>",
+        "arn:aws:s3:::beacon-releases-<ACCOUNT_ID>/*"
+      ]
+    },
+    {
+      "Sid": "NeverDeleteBeaconBuckets",
+      "Effect": "Deny",
+      "Action": "s3:DeleteBucket",
+      "Resource": [
+        "arn:aws:s3:::beacon-tfstate-<ACCOUNT_ID>",
+        "arn:aws:s3:::beacon-releases-<ACCOUNT_ID>"
+      ]
+    },
+    {
+      "Sid": "DeployRoles",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:DeleteRole",
+        "iam:GetRole",
+        "iam:UpdateRole",
+        "iam:UpdateRoleDescription",
+        "iam:UpdateAssumeRolePolicy",
+        "iam:TagRole",
+        "iam:UntagRole",
+        "iam:ListRoleTags",
+        "iam:ListRolePolicies",
+        "iam:GetRolePolicy",
+        "iam:ListAttachedRolePolicies",
+        "iam:DetachRolePolicy",
+        "iam:ListInstanceProfilesForRole"
+      ],
+      "Resource": "arn:aws:iam::<ACCOUNT_ID>:role/beacon-deploy-*"
+    },
+    {
+      "Sid": "AttachOnlyBeaconDeployPolicies",
+      "Effect": "Allow",
+      "Action": "iam:AttachRolePolicy",
+      "Resource": "arn:aws:iam::<ACCOUNT_ID>:role/beacon-deploy-*",
+      "Condition": {
+        "ArnLike": {
+          "iam:PolicyARN": "arn:aws:iam::<ACCOUNT_ID>:policy/beacon-deploy-*"
+        }
+      }
+    },
+    {
+      "Sid": "DeployAndBoundaryPolicies",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreatePolicy",
+        "iam:DeletePolicy",
+        "iam:GetPolicy",
+        "iam:GetPolicyVersion",
+        "iam:ListPolicyVersions",
+        "iam:CreatePolicyVersion",
+        "iam:DeletePolicyVersion",
+        "iam:SetDefaultPolicyVersion",
+        "iam:TagPolicy",
+        "iam:UntagPolicy",
+        "iam:ListPolicyTags",
+        "iam:ListEntitiesForPolicy"
+      ],
+      "Resource": [
+        "arn:aws:iam::<ACCOUNT_ID>:policy/beacon-deploy-*",
+        "arn:aws:iam::<ACCOUNT_ID>:policy/beacon-instance-boundary"
+      ]
+    },
+    {
+      "Sid": "ReadGitHubOidcProvider",
+      "Effect": "Allow",
+      "Action": [
+        "iam:GetOpenIDConnectProvider",
+        "iam:ListOpenIDConnectProviders"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

@@ -85,13 +85,14 @@ This means "PR-triggered" and "environment-gated" are two independent, stacked c
 
 | File | Purpose | Trigger | Environments |
 |---|---|---|---|
+| `bootstrap.yml` | Creates the state bucket if missing, then plans/applies `infra/bootstrap/`: releases bucket, the four deploy roles, the instance permissions boundary. | `workflow_dispatch` | `bootstrap` Environment (manually created `beacon-bootstrap` role, §5.2) |
 | `terraform.yml` | Plan / apply / destroy for the Terraform roots: the shared network (`target=network`), shared DNS (`target=dns`), and per-environment application infrastructure (`target=infra`). | `workflow_dispatch` | `network`/`dns`: `shared` Environment. `infra`: dev, stage, prod via `environment` input |
 | `ami.yml` | Packer build of the shared base AMI (OS hardening, Docker Engine, Nginx, CloudWatch Agent). Publishes the resulting AMI ID to SSM Parameter Store. | `workflow_dispatch` | `shared` Environment |
 | `deploy.yml` | Reusable. `dev`: build, test, package, upload to S3. All envs: migrate, update the release-version SSM parameter, instance refresh, smoke test, notify. `validate` mode: lint/test/plan only. | `workflow_dispatch` (dev) and `workflow_call` (from the §3.4 stub, for stage and prod) | dev, stage, prod |
 | `rollback.yml` | Revert an environment's release-version SSM parameter to a prior version; trigger an instance refresh; smoke test. | `workflow_dispatch` | dev, stage, prod |
 | `ci.yml` | Lint + test on PRs into `main` (workflow changes) and on dispatch. | `pull_request` → `main`, `workflow_dispatch` | none |
 
-Five files on `main`, plus the one stub from §3.4 on the promotion branches — all satisfying the Operational Contract's CI-readiness expectations from `3T-APP-DESIGN.md` §13.1 (no dependency on anything beyond stock GitHub-hosted runners and OIDC-assumed AWS credentials).
+Six files on `main`, plus the one stub from §3.4 on the promotion branches — all satisfying the Operational Contract's CI-readiness expectations from `3T-APP-DESIGN.md` §13.1 (no dependency on anything beyond stock GitHub-hosted runners and OIDC-assumed AWS credentials).
 
 ### 4.3 Why `rollback.yml` is manual-dispatch, not PR-triggered
 
@@ -145,9 +146,11 @@ Three GitHub Environments (`dev`, `stage`, `prod`, configured under repo Setting
 
 ### 5.2 Bootstrap and IAM roles
 
-**Bootstrap is a local Terraform root (`infra/bootstrap/`), not a workflow.** It creates the OIDC provider and the roles a workflow would need to authenticate, so it cannot itself authenticate via OIDC; running it as a workflow would require long-lived keys (violating §2 principle 3). It is applied once, by a human with admin credentials via AWS SSO, and rarely touched after. It creates:
+**All AWS access runs through GitHub Actions**; nothing is applied from a laptop. A workflow can't grant itself AWS access, so exactly two things are created by hand, once, in the AWS Console: the GitHub OIDC identity provider, and a `beacon-bootstrap` role. That role trusts only the `bootstrap` GitHub Environment (required reviewer, `main` only), and it can manage only `beacon-deploy-*` roles and policies and the two Beacon buckets. It can't modify itself. The exact policies and steps are in `infra/bootstrap/README.md`.
 
-- The Terraform state bucket `beacon-tfstate-<account-id>` (versioned, SSE, public access blocked). Bootstrap's own state starts local and is migrated into this bucket after the first apply.
+`bootstrap.yml` then assumes `beacon-bootstrap` and applies `infra/bootstrap/`:
+
+- The Terraform state bucket `beacon-tfstate-<account-id>` (versioned, SSE, public access blocked, TLS-only). The workflow creates it with the AWS CLI before `terraform init`, since Terraform can't create the bucket its own state lives in. `infra/bootstrap/` then imports it, and its own state lives in it at `env:/shared/bootstrap.tfstate`.
 - The release artifact bucket `beacon-releases-<account-id>` (versioned, SSE, public access blocked). S3 bucket names are global, hence the account suffix.
 - The GitHub OIDC identity provider.
 - Four deploy roles:
@@ -516,7 +519,7 @@ Given a target `environment` and a target `version` (defaulting to "the previous
 | # | Decision | Why | Supersedes |
 |---|---|---|---|
 | 1 | PR-triggered stage/prod deploys go through a thin stub on the promotion branches that calls the reusable `deploy.yml` on `main` (§3.4). | GitHub runs `pull_request` workflows from the PR's merge ref, so a workflow only on `main` can never fire for PRs into `stage`/`prod`. | "`main` holds all workflow files, other branches hold none" (v1 §3.1) |
-| 2 | Bootstrap is a local Terraform root applied once with admin SSO credentials, not `bootstrap.yml` (§5.2). | It creates the OIDC provider and roles, so it can't authenticate through them; a workflow would need long-lived keys. | `bootstrap.yml` (v1 §4.2) |
+| 2 | The OIDC provider and one `beacon-bootstrap` role are created by hand in the AWS Console; `bootstrap.yml` assumes that role and applies everything else (§5.2). No local AWS access, ever. | A workflow can't grant itself AWS trust. Doing the minimum by hand avoids both local credentials and long-lived keys. | v1 `bootstrap.yml` creating the OIDC provider itself |
 | 3 | Migrations run as a deploy step on a short-lived migrator instance via SSM Run Command, never at boot (§7.1.2). | RDS is unreachable from runners; running at boot breaks rollback to older images. | Unspecified in v1 |
 | 4 | DNS/HTTPS deferred; ALBs serve HTTP on their AWS DNS names until a domain exists (§6.7). | No registered domain yet. | — |
 | 5 | Release `version` = hash of the `backend/` + `frontend/` Git trees (§7.1). | Commit SHAs change on every promotion merge, so SHA-keyed artifacts can't be found in stage/prod. | "`git describe` or a run-derived semver" (v1 §7.1) |

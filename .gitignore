@@ -25,6 +25,14 @@ coverage/
 *.p12
 *.pfx
 
+# Terraform (lockfiles ARE committed)
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+crash.log
+
 # Release packaging output
 build/
 
