@@ -577,6 +577,22 @@ data "aws_iam_policy_document" "shared_network" {
     }
   }
 
+  # Interface endpoints with private DNS attach the VPC to an AWS-managed
+  # private hosted zone; AWS checks these as dependent actions of
+  # CreateVpcEndpoint / DeleteVpcEndpoints. Not tag-scoped (Route 53 hosted
+  # zones don't support it); the role can't create or edit zones or records.
+  statement {
+    sid = "EndpointPrivateDns"
+    actions = [
+      "route53:AssociateVPCWithHostedZone",
+      "route53:DisassociateVPCFromHostedZone",
+    ]
+    resources = [
+      "arn:${local.partition}:route53:::hostedzone/*",
+      "${local.arn_ec2}:vpc/*",
+    ]
+  }
+
   statement {
     sid = "SharedParameters"
     actions = [
