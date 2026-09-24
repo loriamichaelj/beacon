@@ -1,0 +1,311 @@
+name: deploy
+run-name: deploy ${{ inputs.environment || 'dev' }} (${{ inputs.mode || 'deploy' }}, ${{ inputs.ref || github.ref_name }})
+
+# Build once, promote forward (docs/CLOUD-DEVOPS-DESIGN.md §7.1).
+#
+#   prepare  resolve inputs, check out the exact commit, compute the release
+#            version (hash of the backend/ + frontend/ trees)
+#   test     make lint + make test                      (dev deploys, validate)
+#   build    package and publish the release to S3      (dev deploys only)
+#   deploy   preflight -> migrations -> release pointer -> instance refresh
+#            -> smoke tests, in the target environment
+#
+# Triggers:
+#   workflow_dispatch  dev only: Actions -> deploy -> Run workflow
+#   workflow_call      from the PR-trigger stub on stage/prod (§3.4, added
+#                      later): mode=validate on PR pushes, deploy on merge
+#
+# Stage and prod never build: they deploy the release dev already built and
+# published, and prod only what stage is running (scripts/deploy/preflight.sh).
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch or commit to release to dev"
+        type: string
+        default: dev
+      force:
+        description: "Replace instances even if dev already runs this release (e.g. to pick up a new base AMI)"
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      environment:
+        description: "dev | stage | prod"
+        type: string
+        required: true
+      mode:
+        description: "deploy | validate (validate changes nothing)"
+        type: string
+        required: true
+      ref:
+        description: "Commit to release; defaults to the triggering commit"
+        type: string
+        required: false
+        default: ""
+      force:
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+# One deploy per environment at a time; a second one queues.
+concurrency:
+  group: deploy-${{ inputs.environment || 'dev' }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      environment: ${{ steps.resolve.outputs.environment }}
+      mode: ${{ steps.resolve.outputs.mode }}
+      sha: ${{ steps.version.outputs.sha }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Resolve inputs
+        id: resolve
+        env:
+          IN_ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+          IN_MODE: ${{ inputs.mode || 'deploy' }}
+          IN_REF: ${{ inputs.ref }}
+        run: |
+          case "${IN_ENVIRONMENT}" in dev|stage|prod) ;; *) echo "::error::Unknown environment '${IN_ENVIRONMENT}'"; exit 1 ;; esac
+          case "${IN_MODE}" in deploy|validate) ;; *) echo "::error::Unknown mode '${IN_MODE}'"; exit 1 ;; esac
+          {
+            echo "environment=${IN_ENVIRONMENT}"
+            echo "mode=${IN_MODE}"
+            echo "ref=${IN_REF:-${GITHUB_SHA}}"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.resolve.outputs.ref }}
+          persist-credentials: false
+
+      # Later jobs check out this exact commit, so a push to the branch
+      # mid-run can't mix versions.
+      - name: Compute release version
+        id: version
+        run: |
+          version="$(scripts/release/version.sh)"
+          sha="$(git rev-parse HEAD)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "Release ${version} from ${sha}"
+
+  test:
+    name: Lint and test
+    needs: prepare
+    if: needs.prepare.outputs.environment == 'dev' || needs.prepare.outputs.mode == 'validate'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          (cd backend && uv sync --frozen --group dev)
+          (cd frontend && npm ci)
+
+      - name: Lint
+        run: make lint
+
+      # Backend integration tests start their own Postgres via testcontainers.
+      - name: Test
+        run: make test
+
+  build:
+    name: Build and publish release
+    needs: [prepare, test]
+    if: needs.prepare.outputs.environment == 'dev' && needs.prepare.outputs.mode == 'deploy'
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 20
+    env:
+      ENVIRONMENT: dev
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+
+      - name: Load project config
+        run: |
+          while IFS='=' read -r key value; do
+            case "${key}" in ''|'#'*) continue ;; esac
+            echo "${key}=${value}" >> "$GITHUB_ENV"
+          done < infra/project.env
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: deploy-build-${{ github.run_id }}
+          mask-aws-account-id: true
+
+      # Releases are immutable and keyed by content: unchanged app code
+      # (e.g. an infra-only commit) reuses the existing release.
+      - name: Check for existing release
+        id: existing
+        run: |
+          if scripts/deploy/publish-release.sh --check "${VERSION}"; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@v7
+        if: steps.existing.outputs.published == 'false'
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Package
+        if: steps.existing.outputs.published == 'false'
+        run: |
+          (cd frontend && npm ci)
+          make package
+
+      - name: Publish to S3
+        if: steps.existing.outputs.published == 'false'
+        env:
+          GIT_SHA: ${{ needs.prepare.outputs.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: scripts/deploy/publish-release.sh "${VERSION}"
+
+  deploy:
+    name: ${{ needs.prepare.outputs.mode == 'validate' && 'Validate' || 'Deploy' }} ${{ needs.prepare.outputs.environment }}
+    needs: [prepare, test, build]
+    # test and build are skipped where they don't apply; anything else must pass.
+    if: >-
+      always() &&
+      needs.prepare.result == 'success' &&
+      contains(fromJSON('["success","skipped"]'), needs.test.result) &&
+      contains(fromJSON('["success","skipped"]'), needs.build.result)
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ needs.prepare.outputs.environment }}
+      url: ${{ steps.smoke.outputs.url }}
+    timeout-minutes: 75
+    env:
+      ENVIRONMENT: ${{ needs.prepare.outputs.environment }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      MODE: ${{ needs.prepare.outputs.mode }}
+      FORCE: ${{ inputs.force }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+
+      - name: Load project config
+        run: |
+          while IFS='=' read -r key value; do
+            case "${key}" in ''|'#'*) continue ;; esac
+            echo "${key}=${value}" >> "$GITHUB_ENV"
+          done < infra/project.env
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: deploy-${{ github.run_id }}
+          mask-aws-account-id: true
+
+      - name: Preflight
+        id: preflight
+        run: scripts/deploy/preflight.sh "${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Decide
+        id: decide
+        env:
+          PREVIOUS: ${{ steps.preflight.outputs.previous_version }}
+        run: |
+          if [ "${MODE}" = "validate" ]; then
+            echo "Validate mode: ${ENVIRONMENT} would go from ${PREVIOUS} to ${VERSION}. Nothing changed."
+            echo "rollout=false" >> "$GITHUB_OUTPUT"
+          elif [ "${PREVIOUS}" = "${VERSION}" ] && [ "${FORCE}" != "true" ]; then
+            echo "::notice::${ENVIRONMENT} already runs ${VERSION}; nothing to deploy (use force to replace instances anyway)."
+            echo "rollout=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "rollout=true" >> "$GITHUB_OUTPUT"
+          fi
+          # Migrations only when the release changes; forced re-rollouts of the
+          # same release skip them.
+          if [ "${MODE}" = "deploy" ] && [ "${PREVIOUS}" != "${VERSION}" ]; then
+            echo "migrate=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "migrate=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run database migrations
+        if: steps.decide.outputs.migrate == 'true'
+        run: scripts/deploy/run-migrations.sh "${VERSION}"
+
+      - name: Roll out
+        if: steps.decide.outputs.rollout == 'true'
+        env:
+          PREVIOUS: ${{ steps.preflight.outputs.previous_version }}
+        run: scripts/deploy/rollout.sh "${VERSION}" "${PREVIOUS}"
+
+      - name: Smoke test
+        id: smoke
+        if: steps.decide.outputs.rollout == 'true'
+        run: scripts/deploy/smoke-test.sh >> "$GITHUB_OUTPUT"
+
+      # Safety net: run-migrations.sh terminates its migrator on exit, but a
+      # cancelled job can skip that.
+      - name: Clean up stray migrators
+        if: always() && env.MODE == 'deploy'
+        run: |
+          ids="$(aws ec2 describe-instances \
+            --filters "Name=tag:Role,Values=migrator" "Name=tag:Environment,Values=${ENVIRONMENT}" \
+                      "Name=tag:Project,Values=${NAME_PREFIX}" "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+            --query 'Reservations[].Instances[].InstanceId' --output text)"
+          if [ -n "${ids}" ]; then
+            echo "Terminating stray migrator(s): ${ids}"
+            # shellcheck disable=SC2086  # ids is a space-separated list
+            aws ec2 terminate-instances --instance-ids ${ids} >/dev/null
+          fi
+
+      - name: Summary
+        if: always()
+        env:
+          PREVIOUS: ${{ steps.preflight.outputs.previous_version }}
+          URL: ${{ steps.smoke.outputs.url }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+          OUTCOME: ${{ job.status }}
+        run: |
+          {
+            echo "### ${MODE} ${ENVIRONMENT}: ${OUTCOME}"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Release | \`${VERSION}\` (commit \`${SHA:0:7}\`) |"
+            echo "| Previously running | \`${PREVIOUS:-unknown}\` |"
+            [ -n "${URL}" ] && echo "| URL | ${URL} |"
+          } >> "$GITHUB_STEP_SUMMARY"
