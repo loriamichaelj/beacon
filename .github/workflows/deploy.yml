@@ -278,6 +278,25 @@ jobs:
         if: steps.decide.outputs.rollout == 'true'
         run: scripts/deploy/smoke-test.sh >> "$GITHUB_OUTPUT"
 
+      - uses: actions/setup-node@v7
+        if: steps.decide.outputs.rollout == 'true'
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: scripts/deploy/browser-smoke/package-lock.json
+
+      # Loads the UI in headless Chromium: catches browser-only failures curl
+      # can't, e.g. APIs browsers withhold from plain-HTTP pages.
+      - name: Browser smoke test
+        if: steps.decide.outputs.rollout == 'true'
+        working-directory: scripts/deploy/browser-smoke
+        env:
+          URL: ${{ steps.smoke.outputs.url }}
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+          node smoke.mjs "${URL}"
+
       # Safety net: run-migrations.sh terminates its migrator on exit, but a
       # cancelled job can skip that.
       - name: Clean up stray migrators
