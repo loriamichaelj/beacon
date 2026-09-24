@@ -1,0 +1,15 @@
+{
+  "name": "beacon-browser-smoke",
+  "private": true,
+  "description": "Post-deploy browser smoke test: loads the Beacon UI in headless Chromium and fails on any browser-side error.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "smoke": "node smoke.mjs"
+  },
+  "dependencies": {
+    "playwright": "1.63.0"
+  }
+}
