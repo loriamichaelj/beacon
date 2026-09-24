@@ -74,6 +74,10 @@ jobs:
       name: ${{ inputs.environment }}
       url: ${{ steps.smoke.outputs.url }}
     timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+      issues: write # pipeline-failure notifications
     defaults:
       run:
         shell: bash
@@ -183,3 +187,16 @@ jobs:
             echo
             [ -s "${REPORT_FILE}" ] && cat "${REPORT_FILE}"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # GitHub-only notifications (design §4.5). Dry runs never notify: a rule
+      # rejecting a target there is the check working, not an incident.
+      - uses: loriamichaelj/beacon/.github/actions/pipeline-status@main
+        if: always() && inputs.dry_run == false
+        with:
+          environment: ${{ inputs.environment }}
+          pipeline: rollback
+          outcome: ${{ job.status }}
+          token: ${{ github.token }}
+          details: |
+            - From `${{ steps.resolve.outputs.current_version || 'unknown' }}` to `${{ steps.resolve.outputs.target_version || 'unresolved' }}`
+            - Reason: ${{ inputs.reason }}

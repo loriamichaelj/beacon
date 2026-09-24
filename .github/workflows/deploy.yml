@@ -301,3 +301,50 @@ jobs:
             echo "| Previously running | \`${PREVIOUS:-unknown}\` |"
             [ -n "${URL}" ] && echo "| URL | ${URL} |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # GitHub-only notifications (design §4.5): a failed deploy opens or updates
+  # the "[<env>] pipeline failure" issue; the next success closes it. Runs after
+  # every job so a failed test or build is reported too. (A workflow_call caller
+  # must grant issues: write for this job.)
+  notify:
+    name: Notify
+    needs: [prepare, test, build, deploy]
+    if: always() && (needs.prepare.outputs.mode || inputs.mode || 'deploy') == 'deploy'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Overall outcome
+        id: outcome
+        env:
+          PREPARE: ${{ needs.prepare.result }}
+          TEST: ${{ needs.test.result }}
+          BUILD: ${{ needs.build.result }}
+          DEPLOY: ${{ needs.deploy.result }}
+        run: |
+          failed=""
+          for pair in "prepare=${PREPARE}" "test=${TEST}" "build=${BUILD}" "deploy=${DEPLOY}"; do
+            [ "${pair#*=}" = "failure" ] && failed="${failed} ${pair%%=*}"
+          done
+          if [ -n "${failed}" ]; then
+            outcome=failure
+          elif [ "${DEPLOY}" = "success" ]; then
+            outcome=success
+          else
+            outcome="${DEPLOY}"   # cancelled / skipped: no notification
+          fi
+          echo "outcome=${outcome}" >> "$GITHUB_OUTPUT"
+          echo "failed=${failed# }" >> "$GITHUB_OUTPUT"
+          echo "outcome=${outcome} failed=[${failed# }]"
+
+      - uses: loriamichaelj/beacon/.github/actions/pipeline-status@main
+        with:
+          environment: ${{ needs.prepare.outputs.environment || inputs.environment || 'dev' }}
+          pipeline: deploy
+          outcome: ${{ steps.outcome.outputs.outcome }}
+          token: ${{ github.token }}
+          details: |
+            - Release: `${{ needs.prepare.outputs.version || 'unknown' }}` (commit `${{ needs.prepare.outputs.sha || 'unknown' }}`)
+            - Failed jobs: ${{ steps.outcome.outputs.failed || 'none' }}
