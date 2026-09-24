@@ -11,9 +11,12 @@ resource "aws_db_parameter_group" "this" {
   family = "postgres16"
 
   # Reject plaintext connections; the app connects with DB_SSL=verify-full.
+  # apply_method matches what RDS reports back; the provider's default
+  # ("immediate") would show as a change on every plan.
   parameter {
-    name  = "rds.force_ssl"
-    value = "1"
+    name         = "rds.force_ssl"
+    value        = "1"
+    apply_method = "pending-reboot"
   }
 }
 
