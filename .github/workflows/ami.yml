@@ -1,10 +1,13 @@
 name: ami
-run-name: ami build (${{ inputs.ref }})
+run-name: ami ${{ inputs.ami_id != '' && format('publish {0}', inputs.ami_id) || format('build ({0})', inputs.ref) }}
 
 # Builds the shared base AMI with Packer (ami/ on the chosen ref) and publishes
 # its ID to SSM /<name_prefix>/base-ami-id, which every environment's launch
-# template reads (docs/CLOUD-DEVOPS-DESIGN.md §6.4). A new AMI reaches an
-# environment at its next instance refresh.
+# template reads via resolve:ssm (docs/CLOUD-DEVOPS-DESIGN.md §6.4). A new AMI
+# reaches an environment at its next instance refresh.
+#
+# With ami_id set, skips the build and only publishes that existing AMI: for
+# rolling every environment back to a previous base image.
 
 on:
   workflow_dispatch:
@@ -13,6 +16,10 @@ on:
         description: "Branch whose ami/ code to build"
         type: string
         default: dev
+      ami_id:
+        description: "Publish this existing AMI instead of building (rollback); leave empty to build"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -53,12 +60,14 @@ jobs:
           mask-aws-account-id: true
 
       - uses: hashicorp/setup-packer@v3
+        if: inputs.ami_id == ''
         with:
           version: 1.16.1
 
       # Throwaway SSH key for this build only: injected via user_data, deleted
       # from the image by provision.sh, never registered as an AWS key pair.
       - name: Generate build key
+        if: inputs.ami_id == ''
         run: |
           ssh-keygen -q -t ed25519 -N "" -C "packer-${GITHUB_RUN_ID}" -f "${RUNNER_TEMP}/packer_key"
           {
@@ -70,6 +79,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Packer init and validate
+        if: inputs.ami_id == ''
         working-directory: ami
         run: |
           packer init .
@@ -77,32 +87,77 @@ jobs:
           packer validate .
 
       - name: Packer build
+        if: inputs.ami_id == ''
         working-directory: ami
         run: packer build -color=false -timestamp-ui .
 
       - name: Publish AMI ID
         working-directory: ami
+        env:
+          INPUT_AMI_ID: ${{ inputs.ami_id }}
         run: |
-          ami_id="$(jq -r '.builds[-1].artifact_id' manifest.json | cut -d: -f2)"
+          if [ -n "${INPUT_AMI_ID}" ]; then
+            ami_id="${INPUT_AMI_ID}"
+          else
+            ami_id="$(jq -r '.builds[-1].artifact_id' manifest.json | cut -d: -f2)"
+          fi
           case "${ami_id}" in
             ami-*) ;;
-            *) echo "::error::No AMI ID in manifest.json (got '${ami_id}')"; exit 1 ;;
+            *) echo "::error::Not an AMI ID: '${ami_id}'"; exit 1 ;;
           esac
+
+          # Only this project's own, available images may be published.
+          # shellcheck disable=SC2016  # backticks are JMESPath literals, not shell
+          read -r state project < <(aws ec2 describe-images --owners self --image-ids "${ami_id}" \
+            --query 'Images[0].[State, Tags[?Key==`Project`].Value | [0]]' --output text 2>/dev/null || echo "missing -")
+          if [ "${state}" != "available" ] || [ "${project}" != "${NAME_PREFIX}" ]; then
+            echo "::error::${ami_id} isn't an available image of this project (state=${state}, Project=${project})"
+            exit 1
+          fi
+
+          # resolve:ssm in launch templates only accepts parameters of data
+          # type aws:ec2:image. The data type can't be changed in place, so a
+          # parameter created with any other type is deleted and recreated.
           param="/${NAME_PREFIX}/base-ami-id"
-          if aws ssm get-parameter --name "${param}" >/dev/null 2>&1; then
-            aws ssm put-parameter --name "${param}" --type String --value "${ami_id}" --overwrite >/dev/null
+          data_type="$(aws ssm describe-parameters --parameter-filters "Key=Name,Values=${param}" \
+            --query 'Parameters[0].DataType' --output text)"
+          if [ "${data_type}" = "aws:ec2:image" ]; then
+            aws ssm put-parameter --name "${param}" --type String --data-type aws:ec2:image \
+              --value "${ami_id}" --overwrite >/dev/null
           else
-            aws ssm put-parameter --name "${param}" --type String --value "${ami_id}" \
+            if [ "${data_type}" != "None" ]; then
+              echo "Recreating ${param} (data type '${data_type}' -> aws:ec2:image)"
+              aws ssm delete-parameter --name "${param}"
+            fi
+            aws ssm put-parameter --name "${param}" --type String --data-type aws:ec2:image \
+              --value "${ami_id}" \
               --tags "Key=Project,Value=${NAME_PREFIX}" "Key=Environment,Value=shared" "Key=ManagedBy,Value=ami.yml" >/dev/null
           fi
+
+          # SSM validates aws:ec2:image values asynchronously; wait until the
+          # new value is readable before declaring success.
+          for _ in $(seq 1 30); do
+            current="$(aws ssm get-parameter --name "${param}" --query Parameter.Value --output text 2>/dev/null || true)"
+            [ "${current}" = "${ami_id}" ] && break
+            sleep 2
+          done
+          if [ "${current}" != "${ami_id}" ]; then
+            echo "::error::${param} didn't settle on ${ami_id} (reads '${current}')"
+            exit 1
+          fi
+
           {
             echo "### Base AMI"
             echo
             echo "| | |"
             echo "|---|---|"
             echo "| AMI | \`${ami_id}\` |"
-            echo "| Published to | \`${param}\` |"
-            echo "| Source commit | \`${PKR_VAR_git_sha}\` |"
+            echo "| Published to | \`${param}\` (aws:ec2:image) |"
+            if [ -n "${INPUT_AMI_ID}" ]; then
+              echo "| Mode | publish existing AMI (no build) |"
+            else
+              echo "| Source commit | \`${PKR_VAR_git_sha}\` |"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
           echo "Published ${ami_id} to ${param}"
 
