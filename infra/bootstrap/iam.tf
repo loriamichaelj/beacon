@@ -227,6 +227,44 @@ data "aws_iam_policy_document" "env_compute" {
     }
   }
 
+  # EC2 authorizes RunInstances and CreateSecurityGroup against every resource
+  # involved, not just the ones being created, and request tags only count for
+  # the latter. The resources an environment merely *uses* need their own
+  # grants: the shared VPC and subnets (Environment=shared, this Project only),
+  # this account's AMIs, and the network interface RunInstances creates.
+  statement {
+    sid       = "Ec2UseSharedNetwork"
+    actions   = ["ec2:CreateSecurityGroup", "ec2:RunInstances"]
+    resources = ["${local.arn_ec2}:vpc/*", "${local.arn_ec2}:subnet/*"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Environment"
+      values   = ["shared"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Project"
+      values   = [local.n]
+    }
+  }
+
+  statement {
+    sid       = "Ec2LaunchFromOwnAmi"
+    actions   = ["ec2:RunInstances"]
+    resources = ["arn:${local.partition}:ec2:${var.aws_region}::image/*"]
+    condition {
+      test     = "StringEquals"
+      variable = "ec2:Owner"
+      values   = [local.account_id]
+    }
+  }
+
+  statement {
+    sid       = "Ec2LaunchInterfaces"
+    actions   = ["ec2:RunInstances"]
+    resources = ["${local.arn_ec2}:network-interface/*"]
+  }
+
   statement {
     sid = "Ec2ManageOwn"
     actions = [
@@ -243,6 +281,7 @@ data "aws_iam_policy_document" "env_compute" {
       "ec2:DeleteLaunchTemplate",
       "ec2:DeleteLaunchTemplateVersions",
       "ec2:TerminateInstances",
+      "ec2:RunInstances", # using this environment's own security groups and launch template
       "ec2:CreateTags",
       "ec2:DeleteTags",
     ]
@@ -652,6 +691,27 @@ data "aws_iam_policy_document" "shared_ami" {
       variable = "aws:RequestTag/Project"
       values   = [local.n]
     }
+  }
+
+  # Resources RunInstances uses but doesn't create, which request tags don't
+  # cover: the source AMI (Amazon's, or this account's) and the network
+  # interface the launch creates. Subnets and Packer's security group are
+  # tagged, so NetworkManageOwn covers them.
+  statement {
+    sid       = "BuildLaunchFromAmi"
+    actions   = ["ec2:RunInstances"]
+    resources = ["arn:${local.partition}:ec2:${var.aws_region}::image/*"]
+    condition {
+      test     = "StringEquals"
+      variable = "ec2:Owner"
+      values   = ["amazon", local.account_id]
+    }
+  }
+
+  statement {
+    sid       = "BuildLaunchInterfaces"
+    actions   = ["ec2:RunInstances"]
+    resources = ["${local.arn_ec2}:network-interface/*"]
   }
 
   statement {
