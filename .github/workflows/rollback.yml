@@ -134,6 +134,25 @@ jobs:
         if: inputs.dry_run == false
         run: scripts/deploy/smoke-test.sh >> "$GITHUB_OUTPUT"
 
+      - uses: actions/setup-node@v7
+        if: inputs.dry_run == false
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: scripts/deploy/browser-smoke/package-lock.json
+
+      # Loads the UI in headless Chromium: catches browser-only failures curl
+      # can't, e.g. APIs browsers withhold from plain-HTTP pages.
+      - name: Browser smoke test
+        if: inputs.dry_run == false
+        working-directory: scripts/deploy/browser-smoke
+        env:
+          URL: ${{ steps.smoke.outputs.url }}
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+          node smoke.mjs "${URL}"
+
       - name: Summary
         if: always()
         env:
