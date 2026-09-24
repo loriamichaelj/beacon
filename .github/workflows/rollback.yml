@@ -1,15 +1,28 @@
 name: rollback
-run-name: rollback ${{ inputs.environment }} to ${{ inputs.version || 'previous release' }}
+run-name: >-
+  ${{ inputs.dry_run && 'dry-run ' || '' }}rollback ${{ inputs.environment }} to
+  ${{ inputs.sha != '' && format('commit {0}', inputs.sha) || (inputs.version != '' && inputs.version || 'previous release') }}
 
 # Roll an environment back to an earlier release (docs/CLOUD-DEVOPS-DESIGN.md
 # §4.3, §7.2): point release-version at it, replace instances, smoke test.
 #
-# - Manual dispatch, no PR: during an incident a PR is friction, not safety.
-#   Stage and prod are still gated by their Environment's required reviewer.
-# - Never runs migrations. Migrations must stay backward-compatible with the
-#   previous release (§7.1.2) so the older image works on the current schema.
-# - Uses the deploy scripts from the environment's own branch (dev, stage,
-#   or prod), i.e. the scripts that deployed what's running there.
+# Target: a commit SHA (mapped to its release), a release version, or, by
+# default, the release that ran before the current one.
+#
+# Rules, enforced by scripts/deploy/resolve-rollback.sh before anything changes:
+#   1. published  the target is a complete release in the releases bucket
+#   2. proven     the target has run in this environment before
+#                 (override: allow_unproven, dev only)
+#   3. schema     if migrations differ between the running release and the
+#                 target, the target must be the previous release
+#                 (override: allow_schema_change)
+#   A reason is required and recorded in the job summary with who ran it.
+#   dry_run checks everything and changes nothing.
+#
+# Also: manual dispatch with no PR (during an incident a PR is friction, not
+# safety), gated by the Environment's required reviewer on stage and prod; never
+# runs migrations; shares the deploy queue; if the rollout fails, the release
+# pointer goes back to the current release.
 
 on:
   workflow_dispatch:
@@ -19,10 +32,30 @@ on:
         type: choice
         options: [dev, stage, prod]
         default: dev
-      version:
-        description: "Release to roll back to; empty = the one before the current release"
+      reason:
+        description: "Why (required; recorded in the run summary)"
+        type: string
+        required: true
+      sha:
+        description: "Roll back to the release built from this commit (full or short SHA)"
         type: string
         default: ""
+      version:
+        description: "Or: roll back to this release version (leave both empty for the previous release)"
+        type: string
+        default: ""
+      dry_run:
+        description: "Only check the rules and show what would happen"
+        type: boolean
+        default: false
+      allow_schema_change:
+        description: "Override: allow a target older than the previous release across a migration change"
+        type: boolean
+        default: false
+      allow_unproven:
+        description: "Override (dev only): allow a target that never ran in this environment"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -35,7 +68,7 @@ concurrency:
 
 jobs:
   rollback:
-    name: Roll back ${{ inputs.environment }}
+    name: ${{ inputs.dry_run && 'Dry-run rollback' || 'Roll back' }} ${{ inputs.environment }}
     runs-on: ubuntu-latest
     environment:
       name: ${{ inputs.environment }}
@@ -46,10 +79,21 @@ jobs:
         shell: bash
     env:
       ENVIRONMENT: ${{ inputs.environment }}
+      REASON: ${{ inputs.reason }}
+      DRY_RUN: ${{ inputs.dry_run }}
     steps:
+      - name: Check inputs
+        run: |
+          if [ -z "$(printf '%s' "${REASON}" | tr -d '[:space:]')" ]; then
+            echo "::error::A reason is required."
+            exit 1
+          fi
+
+      # Full history: SHA lookup and the schema comparison need every commit.
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.environment }}
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Load project config
@@ -66,15 +110,20 @@ jobs:
           role-session-name: rollback-${{ github.run_id }}
           mask-aws-account-id: true
 
-      - name: Resolve target release
+      - name: Check rollback rules
         id: resolve
         env:
-          REQUESTED: ${{ inputs.version }}
-        run: scripts/deploy/resolve-rollback.sh ${REQUESTED:+"${REQUESTED}"} >> "$GITHUB_OUTPUT"
+          TARGET_SHA: ${{ inputs.sha }}
+          TARGET_VERSION: ${{ inputs.version }}
+          ALLOW_SCHEMA_CHANGE: ${{ inputs.allow_schema_change }}
+          ALLOW_UNPROVEN: ${{ inputs.allow_unproven }}
+          REPORT_FILE: ${{ runner.temp }}/rollback-report.md
+        run: scripts/deploy/resolve-rollback.sh >> "$GITHUB_OUTPUT"
 
       # If the refresh fails, rollout.sh points release-version back at the
       # current release, so the environment is left as it was.
       - name: Roll out
+        if: inputs.dry_run == false
         env:
           TARGET: ${{ steps.resolve.outputs.target_version }}
           CURRENT: ${{ steps.resolve.outputs.current_version }}
@@ -82,22 +131,36 @@ jobs:
 
       - name: Smoke test
         id: smoke
+        if: inputs.dry_run == false
         run: scripts/deploy/smoke-test.sh >> "$GITHUB_OUTPUT"
 
       - name: Summary
         if: always()
         env:
           TARGET: ${{ steps.resolve.outputs.target_version }}
+          TARGET_SHA: ${{ steps.resolve.outputs.target_sha }}
           CURRENT: ${{ steps.resolve.outputs.current_version }}
+          CURRENT_SHA: ${{ steps.resolve.outputs.current_sha }}
           URL: ${{ steps.smoke.outputs.url }}
           OUTCOME: ${{ job.status }}
+          ACTOR: ${{ github.actor }}
+          REPORT_FILE: ${{ runner.temp }}/rollback-report.md
         run: |
+          if [ "${DRY_RUN}" = "true" ]; then
+            title="dry-run rollback ${ENVIRONMENT}: ${OUTCOME} (nothing changed)"
+          else
+            title="rollback ${ENVIRONMENT}: ${OUTCOME}"
+          fi
           {
-            echo "### rollback ${ENVIRONMENT}: ${OUTCOME}"
+            echo "### ${title}"
             echo
             echo "| | |"
             echo "|---|---|"
-            echo "| From | \`${CURRENT:-unknown}\` |"
-            echo "| To | \`${TARGET:-unresolved}\` |"
+            echo "| From | \`${CURRENT:-unknown}\` (commit \`${CURRENT_SHA:0:7}\`) |"
+            echo "| To | \`${TARGET:-unresolved}\` (commit \`${TARGET_SHA:0:7}\`) |"
+            echo "| Requested by | @${ACTOR} |"
+            echo "| Reason | ${REASON//|/\\|} |"
             [ -n "${URL}" ] && echo "| URL | ${URL} |"
+            echo
+            [ -s "${REPORT_FILE}" ] && cat "${REPORT_FILE}"
           } >> "$GITHUB_STEP_SUMMARY"
