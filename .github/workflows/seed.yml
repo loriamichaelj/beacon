@@ -1,0 +1,60 @@
+name: seed
+run-name: seed dev (${{ inputs.ref }})
+
+# Loads the local-dev seed data (backend/scripts/seed.py: 8 services, 20
+# incidents) into dev's database, from the release dev is currently running.
+# Idempotent: does nothing if any service already exists. Dev only; there is
+# deliberately no environment input.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch whose scripts/deploy/run-seed.sh to use"
+        type: string
+        default: dev
+
+permissions:
+  contents: read
+  id-token: write
+
+# Shares the deploy queue so it never runs mid-rollout.
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    env:
+      ENVIRONMENT: dev
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Load project config
+        run: |
+          while IFS='=' read -r key value; do
+            case "${key}" in ''|'#'*) continue ;; esac
+            echo "${key}=${value}" >> "$GITHUB_ENV"
+          done < infra/project.env
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: seed-${{ github.run_id }}
+          mask-aws-account-id: true
+
+      - name: Seed dev
+        run: |
+          result="$(scripts/deploy/run-seed.sh)"
+          echo "${result}"
+          echo "### seed dev: ${result}" >> "$GITHUB_STEP_SUMMARY"
