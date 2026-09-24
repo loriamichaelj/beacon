@@ -161,6 +161,30 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           echo "Published ${ami_id} to ${param}"
 
+      # Keep the newest AMIs (the published one always survives) and delete
+      # older images with their snapshots. Running instances are unaffected
+      # by deregistering the AMI they launched from; publish-only rollback
+      # (ami_id) can reach the images kept here.
+      - name: Prune old AMIs
+        env:
+          KEEP: 3
+        run: |
+          current="$(aws ssm get-parameter --name "/${NAME_PREFIX}/base-ami-id" --query Parameter.Value --output text)"
+          mapfile -t images < <(aws ec2 describe-images --owners self \
+            --filters "Name=tag:Project,Values=${NAME_PREFIX}" "Name=tag:Stack,Values=ami" \
+            --query 'reverse(sort_by(Images, &CreationDate))[].ImageId' --output text | tr '\t' '\n' | sed '/^$/d')
+          echo "${#images[@]} AMI(s); keeping the newest ${KEEP} and ${current}"
+          for ami in "${images[@]:${KEEP}}"; do
+            [ "${ami}" = "${current}" ] && continue
+            snapshots="$(aws ec2 describe-images --image-ids "${ami}" \
+              --query 'Images[0].BlockDeviceMappings[].Ebs.SnapshotId' --output text)"
+            aws ec2 deregister-image --image-id "${ami}"
+            for snap in ${snapshots}; do
+              aws ec2 delete-snapshot --snapshot-id "${snap}"
+            done
+            echo "Pruned ${ami} (snapshots: ${snapshots})"
+          done
+
       - name: Remove build key
         if: always()
         run: rm -f "${RUNNER_TEMP}/packer_key" "${RUNNER_TEMP}/packer_key.pub"
