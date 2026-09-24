@@ -1,0 +1,103 @@
+name: rollback
+run-name: rollback ${{ inputs.environment }} to ${{ inputs.version || 'previous release' }}
+
+# Roll an environment back to an earlier release (docs/CLOUD-DEVOPS-DESIGN.md
+# §4.3, §7.2): point release-version at it, replace instances, smoke test.
+#
+# - Manual dispatch, no PR: during an incident a PR is friction, not safety.
+#   Stage and prod are still gated by their Environment's required reviewer.
+# - Never runs migrations. Migrations must stay backward-compatible with the
+#   previous release (§7.1.2) so the older image works on the current schema.
+# - Uses the deploy scripts from the environment's own branch (dev, stage,
+#   or prod), i.e. the scripts that deployed what's running there.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to roll back"
+        type: choice
+        options: [dev, stage, prod]
+        default: dev
+      version:
+        description: "Release to roll back to; empty = the one before the current release"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write
+
+# Shares the deploy queue: never runs alongside a deploy to the same environment.
+concurrency:
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    name: Roll back ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ steps.smoke.outputs.url }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      ENVIRONMENT: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.environment }}
+          persist-credentials: false
+
+      - name: Load project config
+        run: |
+          while IFS='=' read -r key value; do
+            case "${key}" in ''|'#'*) continue ;; esac
+            echo "${key}=${value}" >> "$GITHUB_ENV"
+          done < infra/project.env
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: rollback-${{ github.run_id }}
+          mask-aws-account-id: true
+
+      - name: Resolve target release
+        id: resolve
+        env:
+          REQUESTED: ${{ inputs.version }}
+        run: scripts/deploy/resolve-rollback.sh ${REQUESTED:+"${REQUESTED}"} >> "$GITHUB_OUTPUT"
+
+      # If the refresh fails, rollout.sh points release-version back at the
+      # current release, so the environment is left as it was.
+      - name: Roll out
+        env:
+          TARGET: ${{ steps.resolve.outputs.target_version }}
+          CURRENT: ${{ steps.resolve.outputs.current_version }}
+        run: scripts/deploy/rollout.sh "${TARGET}" "${CURRENT}"
+
+      - name: Smoke test
+        id: smoke
+        run: scripts/deploy/smoke-test.sh >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        if: always()
+        env:
+          TARGET: ${{ steps.resolve.outputs.target_version }}
+          CURRENT: ${{ steps.resolve.outputs.current_version }}
+          URL: ${{ steps.smoke.outputs.url }}
+          OUTCOME: ${{ job.status }}
+        run: |
+          {
+            echo "### rollback ${ENVIRONMENT}: ${OUTCOME}"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| From | \`${CURRENT:-unknown}\` |"
+            echo "| To | \`${TARGET:-unresolved}\` |"
+            [ -n "${URL}" ] && echo "| URL | ${URL} |"
+          } >> "$GITHUB_STEP_SUMMARY"
