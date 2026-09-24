@@ -1,11 +1,29 @@
 # Cloud & DevOps Design: Beacon — Phase B
 
 **Author:** M.L.
-**Status:** Draft v2 — implementation decisions folded in (see §10, Decision Log)
+**Status:** v3 — implemented and live in **dev** (see §0); stage and prod designed but not provisioned. Decisions in §10.
 **Depends on:** `3T-APP-DESIGN.md` (application design, Phase A). This document assumes Phase A is complete: the app runs correctly on localhost, satisfies its Operational Contract (§11 of `3T-APP-DESIGN.md`), and its CI-readiness requirements (§13.1) are met.
 **Scope:** Branch strategy, pipeline/workflow strategy, environment strategy, and infrastructure strategy for deploying Beacon to AWS on EC2. Excludes Kubernetes/EKS, ECS/Fargate, container registries, and multi-region — those are explicitly out of scope for this phase. (The backend does run as a single Docker container per instance; §6.4.)
 
 ---
+
+## 0. Implementation Status (2026-09-24)
+
+**Scope decision:** everything runs in **dev** only. Stage and prod have their GitHub Environments, deploy roles, branch protection, and code paths (`environments/*.tfvars` is the only piece missing), but **no infrastructure is provisioned for them**, by choice, to limit cost. Every mechanism below has been exercised end to end in dev. Operating procedures are in [`RUNBOOK.md`](RUNBOOK.md).
+
+| Area | State |
+|---|---|
+| Bootstrap (§5.2) | ✅ State and releases buckets, OIDC deploy roles (dev/stage/prod/shared), instance permissions boundary |
+| Network (§6.2) | ✅ Shared VPC, 14 subnets, IGW, no NAT, S3 gateway + 4 interface endpoints |
+| Base AMI (§6.4) | ✅ Packer-built AL2023 + Docker, Nginx, CloudWatch Agent; published to `/loria-beacon/base-ami-id`; newest 3 kept |
+| dev infrastructure (§6) | ✅ ALB (HTTP), ASG, RDS PostgreSQL 16, SSM parameters, log groups |
+| Deploy (§7.1) | ✅ Test → build/publish → migrate (migrator + SSM) → rolling refresh → curl + browser smoke tests → notify |
+| Rollback (§7.2) | ✅ By default, SHA, or version; published/proven/schema rules; dry run; drilled with zero downtime |
+| CI | ✅ `test.yml` on every push to `dev` (stub) and in every deploy; `ci.yml` lints workflows on PRs into `main` |
+| Notifications (§4.5) | ✅ GitHub-only: failure issue per environment, auto-closed on recovery |
+| Dev seed data | ✅ `seed.yml` (dev only) |
+| Stage / prod | ⏸ Not provisioned (scope decision). The PR-trigger stub and validate mode (§3.4) aren't built, since they need stage infra to run |
+| DNS / HTTPS (§6.7) | ⏸ Deferred until a domain exists |
 
 ## 1. Summary
 
@@ -90,9 +108,12 @@ This means "PR-triggered" and "environment-gated" are two independent, stacked c
 | `ami.yml` | Packer build of the shared base AMI (OS hardening, Docker Engine, Nginx, CloudWatch Agent). Publishes the resulting AMI ID to SSM Parameter Store. | `workflow_dispatch` | `shared` Environment |
 | `deploy.yml` | Reusable. `dev`: build, test, package, upload to S3. All envs: migrate, update the release-version SSM parameter, instance refresh, smoke test, notify. `validate` mode: lint/test/plan only. | `workflow_dispatch` (dev) and `workflow_call` (from the §3.4 stub, for stage and prod) | dev, stage, prod |
 | `rollback.yml` | Revert an environment's release-version SSM parameter to a prior version; trigger an instance refresh; smoke test. | `workflow_dispatch` | dev, stage, prod |
-| `ci.yml` | Lint + test on PRs into `main` (workflow changes) and on dispatch. | `pull_request` → `main`, `workflow_dispatch` | none |
+| `ci.yml` | actionlint (with shellcheck) on PRs into `main`; its **Lint workflows** check is required by `main`'s protection. `main` holds only workflows, so there's no app code to test there. | `pull_request` → `main`, `workflow_dispatch` | none |
+| `test.yml` | Reusable app lint + tests (`make lint`, `make test`): the one definition of green, called by `deploy.yml` and by the `dev-ci.yml` stub. | `workflow_call`, `workflow_dispatch` | none |
+| `seed.yml` | Loads the local-dev seed data into **dev** from the running release, via SSM on a healthy instance. Idempotent; has no environment input. | `workflow_dispatch` | dev |
+| `dev-ci.yml` *(stub, on `dev`)* | Calls `test.yml@main` on every push to `dev` (same stub pattern as §3.4). | `push` → `dev` | none |
 
-Six files on `main`, plus the one stub from §3.4 on the promotion branches — all satisfying the Operational Contract's CI-readiness expectations from `3T-APP-DESIGN.md` §13.1 (no dependency on anything beyond stock GitHub-hosted runners and OIDC-assumed AWS credentials).
+Eight files on `main`, plus trigger stubs on the app branches (§3.4) — all satisfying the Operational Contract's CI-readiness expectations from `3T-APP-DESIGN.md` §13.1 (no dependency on anything beyond stock GitHub-hosted runners and OIDC-assumed AWS credentials).
 
 ### 4.3 Why `rollback.yml` is manual-dispatch, not PR-triggered
 
@@ -126,7 +147,13 @@ A safety check runs before any `apply`/`destroy`: verify the resolved backend `k
 
 ### 4.5 Notifications
 
-Deploy and rollback outcomes (success, failure, smoke-test result) post to [Slack webhook / SNS topic / GitHub deployment status — **confirm which** before implementation]. Minimum bar: a failed deploy or failed smoke test must be visible somewhere other than the Actions tab, so it isn't discovered only when someone happens to check.
+**GitHub-only** (decided 2026-09-24). A composite action, `.github/actions/pipeline-status`, runs at the end of every deploy and every real (non-dry-run) rollback:
+
+- **Failure:** opens the issue `[<env>] pipeline failure` (label `pipeline-failure`), assigned to whoever ran the pipeline so GitHub notifies them. If that issue is already open, it comments on it instead. In deploys, a failed test or build job counts too, not just the rollout.
+- **Success:** if that issue is open, comments **Recovered** with the run link and closes it.
+- **Cancelled / skipped:** nothing.
+
+Dry-run rollbacks never notify: a rule rejecting a target there is the check working. GitHub's per-Environment deployment history records every run as well. This meets the minimum bar: a failed deploy or smoke test is visible outside the Actions tab. Slack or SNS can be added later without changing the workflows' structure.
 
 ## 5. Environment Strategy
 
@@ -509,23 +536,35 @@ The preflight step (§7.1, step 5) begins with a check — `aws autoscaling desc
 
 ### 7.2 Rollback flow (`rollback.yml`)
 
-Given a target `environment` and a target `version` (defaulting to "the previous release" if not specified), repeat steps 7–9 above with the prior version: write it to the SSM parameter, trigger an instance refresh, smoke test. "Previous release" is read from the SSM parameter's own version history (`get-parameter-history`), so no separate release log is needed. **Rollback never runs migrations**; it relies on the compatibility rule in §7.1.2. **Scoped to application releases only.** Infrastructure-level rollback (reverting a bad Terraform apply) is not automated in this phase — it's a documented manual procedure in the operational runbook (§8), since it's rare enough and high-risk enough to want a human directly driving `terraform plan` rather than a workflow blindly re-applying a prior state.
+**Target.** Given an `environment`, a rollback targets the release built from a **commit SHA** (`sha`, full or short; the SHA maps to its release version via `scripts/release/version.sh <commit>`), a release **`version`**, or by default the **previous release**. "Previous" is read from the `release-version` parameter's own history (`get-parameter-history`), so no separate release log is needed.
+
+**Rules** (`scripts/deploy/resolve-rollback.sh`). All are checked before anything changes:
+
+1. **published:** the target is a complete release in the releases bucket.
+2. **proven:** the target has run in this environment before (parameter history). Dev may override with `allow_unproven`; stage and prod can't.
+3. **schema:** rollbacks never undo migrations, and only the previous release is guaranteed compatible with the current schema (§7.1.2). So if `backend/alembic/versions/` differs between the running release's build commit and the target's, the target must be the previous release, or `allow_schema_change` must be set.
+
+A **reason** is required and recorded in the job summary with the requester. **`dry_run`** checks everything and changes nothing. The summary lists each rule's result and the ten most recent releases, with commit and go-live time.
+
+**Rollout** then repeats steps 7–9 above with the target: write it to the SSM parameter, run an instance refresh, run the curl and browser smoke tests, and notify (§4.5). If the refresh fails, the pointer is restored to the release that was running. **Rollback never runs migrations.** Drilled in dev: back and forward, zero failed requests across 138 probes. **Scoped to application releases only.** Infrastructure-level rollback (reverting a bad Terraform apply) is not automated in this phase — it's a documented manual procedure in the operational runbook (§8), since it's rare enough and high-risk enough to want a human directly driving `terraform plan` rather than a workflow blindly re-applying a prior state.
 
 ## 8. Deferred to Future Work
 
 - Automated infrastructure rollback.
 - Auto-cascading promotion (currently every environment transition is a deliberate, manually-triggered or PR-merge-triggered action — no workflow automatically cascades into the next).
 - Per-environment AMI staging (§6.4).
-- CloudWatch dashboards/alarms, log retention policy, deployment smoke-test detail, and the full operational runbook — these belong to the observability and release-process work that follows this document and are intentionally not detailed here.
+- CloudWatch dashboards/alarms and Prometheus metric scraping; these belong to observability work. (Done since v2: log retention of 14 days in dev, smoke-test assertions in curl and a headless browser, and the runbook, `RUNBOOK.md`.)
+- Stage and prod infrastructure, the PR-trigger stub, and validate mode (§3.4), per the dev-only scope decision (§0).
+- Pruning old releases from the releases bucket. They're kept because rollbacks need them, and each is about 65 MB.
 - A least-privilege Postgres role for the app, separate from the RDS master user (§6.5).
 - DNS and HTTPS (§6.7), until a domain is registered.
 
 ## 9. Open Items
 
 1. **Domain name** (§6.7) — deferred. `beacon.example.com` is a placeholder. Register the real domain in Route 53 (or register elsewhere and delegate the hosted zone to Route 53) before `terraform.yml -target=dns` can be applied.
-2. **Notification target** (§4.5) — Slack, SNS/email, or GitHub-native only.
-3. **Wait timer on prod's Environment protection rule** (§5.1) — yes/no, and duration if yes.
-4. **Exact smoke-test assertions** for `deploy.yml` step 9 — to be defined alongside the observability work.
+2. ~~**Notification target**~~: resolved; GitHub-only (§4.5).
+3. **Wait timer on prod's Environment protection rule** (§5.1): yes/no, and duration if yes. Moot until prod is provisioned.
+4. ~~**Exact smoke-test assertions**~~: resolved. `smoke-test.sh` checks `/readyz` (with warm-up retries), `/healthz`, an API list call, the SPA and its fallback route, and `/metrics` returning 404. `browser-smoke/smoke.mjs` checks, in headless Chromium, the lists, detail pages, service picker, and forms, failing on any page error, console error, or API error.
 
 ## 10. Decision Log
 
@@ -542,3 +581,13 @@ Given a target `environment` and a target `version` (defaulting to "the previous
 | 9 | ALB SG allows 443 as well as 80; interface endpoints live in dedicated shared subnets (§6.2, §6.3). | v1's SG table omitted 443; endpoints needed a home that isn't any one environment's subnets. | — |
 | 10 | `/metrics` is not exposed through the ALB (§6.4). | It would otherwise be public. | — |
 | 11 | All names carry a project prefix: `loria-beacon` for resources, `cloudbatch818-loria-beacon` for IAM (§5.3). Tag-based IAM conditions check `Project` as well as `Environment`. | The AWS account is shared, and its IAM roles must start with `cloudbatch818-`. | Bare `beacon-*` names and `Project=beacon` |
+| 12 | Deploy logic lives in `scripts/deploy/` on the app branches (preflight, publish, migrations, rollout, smoke tests, rollback rules, seed); the workflows on `main` only orchestrate. | Testable locally against a stubbed AWS CLI, and it promotes with the code it deploys. | — |
+| 13 | `/<prefix>/base-ami-id` is published with data type `aws:ec2:image`; `ami.yml` gains a publish-only mode (`ami_id`) for AMI rollback. | Launch templates only resolve `resolve:ssm:` parameters of that type (the first dev apply failed on it). | — |
+| 14 | GitHub-only notifications via a per-environment failure issue (§4.5). | Chosen notification target; no extra services or secrets. | Open item 2 |
+| 15 | Rollback targets by commit SHA or version, with published/proven/schema rules, a required reason, and dry run (§7.2). | Rollbacks don't undo migrations; only proven, schema-compatible targets are safe by default. | "version only" (v2 §7.2) |
+| 16 | A headless-browser smoke test runs after every deploy and rollback. | curl can't catch browser-only failures; `crypto.randomUUID` (withheld on plain-HTTP pages) broke the dev UI while the curl smoke tests passed. | — |
+| 17 | App CI: reusable `test.yml`, run on every push to `dev` through a stub (the §3.4 pattern) and inside every deploy; `ci.yml` lints workflows on PRs into `main`. | One definition of "green" everywhere; `main` holds no app code to test. | v2 `ci.yml` "lint + test on PRs into main" |
+| 18 | The seed script ships in the backend image; `seed.yml` runs it in dev only, via SSM on a healthy instance. | Same data as local `make seed`; the database stays private. | — |
+| 19 | Keep the newest 3 base AMIs; keep all releases. | AMIs cost storage and are rebuildable; releases are rollback targets. | — |
+| 20 | Dev-only scope: stage and prod aren't provisioned. | Cost; every mechanism is proven in dev (§0). | — |
+| 21 | Infra, AMI, and deploy scripts stay on the app branches (not moved to `main` or a separate repo). | Considered and deferred: moving them would decouple infra promotion from app promotion (principle 2), but it's a larger change. The repo layout can change later without touching AWS. | — |

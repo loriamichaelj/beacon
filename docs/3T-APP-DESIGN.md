@@ -1,14 +1,14 @@
 # Design Doc: Beacon — Service Catalog & Incident Tracker
 
 **Author:** M.L.
-**Status:** v1.4 — Phase A (app build) implemented; Phase B not started
+**Status:** v1.5 — Phase A (app build) implemented; Phase B (AWS on EC2) live in dev, see `CLOUD-DEVOPS-DESIGN.md`
 **Scope:** Application tier only (React frontend, FastAPI backend, PostgreSQL schema), built and verified on **localhost**. The DevOps and cloud work (**GitHub Actions** CI/CD, **AWS** infrastructure, containers, deployment) happens in a later phase and is **out of scope** for this document. The exceptions are the Operational Contract in §11 and the CI-readiness rules in §13.1, which the application must honor so that phase has fixed targets to build against.
 
 ---
 
 ## Build Status (as of 2026-09-23)
 
-**Phase A is implemented on the `dev` branch.** Every checklist item in §15 is ticked, and all nine steps of the §14 plan are done. Phase B (containers, GitHub Actions, AWS) has not been started, and no Phase B artifacts exist in the repo.
+**Phase A is implemented on the `dev` branch.** Every checklist item in §15 is ticked, and all nine steps of the §14 plan are done. Phase B (container image, GitHub Actions, Terraform, AWS) has since been built and is deployed to dev; it is documented in `CLOUD-DEVOPS-DESIGN.md` and `RUNBOOK.md`, not here. The app-side changes it required are noted in §11.
 
 | Area | State |
 |---|---|
@@ -32,7 +32,7 @@
 **Known follow-ups (none block Phase A):**
 - `app/errors.py` uses `HTTP_422_UNPROCESSABLE_ENTITY`, which Starlette now deprecates in favor of `HTTP_422_UNPROCESSABLE_CONTENT`. It emits a `StarletteDeprecationWarning` during tests.
 - Fresh-environment reachability (a clean checkout reaching a working app from the README alone) is deferred to Phase B's first run elsewhere, as noted in §15. The `≥ 85%` coverage target in §13 was not re-measured on 2026-09-23 (needs Docker).
-- Phase B work: Dockerfiles, GitHub Actions, IaC, AWS deployment, and observability wiring. Nothing is started.
+- Phase B work (container image, GitHub Actions, IaC, AWS deployment) is done for dev; see `CLOUD-DEVOPS-DESIGN.md`. Observability wiring (dashboards, alarms) is still future work.
 
 ---
 
@@ -394,7 +394,7 @@ This is what the platform side can rely on. The application must satisfy every i
 
 | Variable | Required | Default | Notes |
 |---|---|---|---|
-| `DATABASE_URL` | Yes | — | `postgresql+asyncpg://user:pass@host:5432/beacon`. Secret. Locally from `.env`; on AWS injected from Secrets Manager by the runtime. The app reads only the env var and has no AWS SDK dependency for this. |
+| `DATABASE_URL` | Yes | — | `postgresql+asyncpg://user:pass@host:5432/beacon`. Secret. Locally from `.env`. On AWS it comes from an SSM Parameter Store SecureString that the instance's `deploy.sh` writes into the container's env-file at boot. The app reads only the env var and has no AWS SDK dependency for this. |
 | `PORT` | No | `8000` | |
 | `LOG_LEVEL` | No | `INFO` | |
 | `DB_POOL_SIZE` | No | `5` | Per process. Total connections = replicas × workers × (pool + overflow); keep below the DB's `max_connections`. |
@@ -409,9 +409,10 @@ This is what the platform side can rely on. The application must satisfy every i
 **TLS note:** asyncpg does **not** honor libpq's `sslmode` query parameter. Build an `ssl.SSLContext` from `DB_SSL` / `DB_SSL_ROOT_CERT` and pass it via `connect_args`. Also check your RDS parameter group: `rds.force_ssl` is enabled by default on recent RDS for PostgreSQL major versions, so plaintext connections will be rejected there.
 
 ### AWS-readiness requirements (satisfied in Phase A, used in Phase B)
-- Container-friendly behavior per the table above. Compute choice (ECS on Fargate vs. EKS) is decided in Phase B, and the app must work unchanged on either.
+- Container-friendly behavior per the table above. Phase B chose EC2: the backend runs as one Docker container per instance (read-only root filesystem, `--tmpfs /tmp`) in an Auto Scaling Group. The same image runs migrations (`alembic upgrade head`) and the dev seed (`python -m scripts.seed`). The app was unchanged apart from the fixes below.
 - `/healthz` and `/readyz` are usable as-is for ALB target group health checks and Kubernetes or ECS container health checks.
-- The backend is fully path-routable under `/api/*` (plus the probe and metrics paths). That lets a single CloudFront distribution serve the SPA from an S3 origin and forward `/api/*` to the backend's load balancer. Everything stays same-origin, so CORS stays off.
+- The backend is fully path-routable under `/api/*` (plus the probe and metrics paths). Phase B uses this with Nginx on each instance: it serves the SPA and proxies `/api/*`, `/healthz`, and `/readyz` to the container, behind one ALB, so everything stays same-origin and CORS stays off. `/metrics` is not exposed publicly.
+- Fixes Phase B surfaced, now part of the app: (1) the backend always passes an explicit `ssl` setting to asyncpg (in the app and in Alembic's `env.py`), since omitting it silently meant unverified TLS and ignored `DB_SSL=verify-full`; (2) the frontend no longer requires `crypto.randomUUID`, which browsers withhold from plain-HTTP pages, for its request IDs.
 - No reliance on local disk, sticky sessions, or instance metadata.
 
 ## 12. Local Development

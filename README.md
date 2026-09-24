@@ -6,12 +6,15 @@ tier, owning team, runbook) and **incidents** raised against them
 full CRUD, liveness/readiness endpoints, and a React UI for managing
 both resources.
 
-This repository currently covers **Phase A: the application itself**,
-built and verified on localhost. Containers, CI/CD, and AWS
-infrastructure are a separate later phase. See
-[`docs/3T-APP-DESIGN.md`](docs/3T-APP-DESIGN.md) for the full design, including the
-[Operational Contract](docs/3T-APP-DESIGN.md#11-operational-contract) that
-phase will build against.
+The repository covers two phases:
+
+- **Phase A, the application:** built and verified on localhost. See
+  [`docs/3T-APP-DESIGN.md`](docs/3T-APP-DESIGN.md), including the
+  [Operational Contract](docs/3T-APP-DESIGN.md#11-operational-contract).
+- **Phase B, cloud and DevOps:** AWS on EC2, deployed by GitHub Actions. It's live
+  in **dev**; stage and prod are designed but not provisioned. See
+  [`docs/CLOUD-DEVOPS-DESIGN.md`](docs/CLOUD-DEVOPS-DESIGN.md) for the design and
+  [`docs/RUNBOOK.md`](docs/RUNBOOK.md) for operating it.
 
 ## Stack
 
@@ -77,6 +80,36 @@ Backend tests that hit the database use
 [testcontainers](https://testcontainers.com/) and start their own
 disposable Postgres - they don't depend on `make db-up`.
 
+## Deployment (AWS)
+
+Everything runs through GitHub Actions; there's no local AWS access. In
+short:
+
+- **Infrastructure:** Terraform (`infra/`), with state in S3. There's one
+  shared VPC with private subnets and VPC endpoints (no NAT), plus, per
+  environment, an ALB, an Auto Scaling Group of EC2 instances, and RDS
+  PostgreSQL 16.
+- **Instances:** a Packer-built base AMI (`ami/`) with Nginx on the host
+  serving the SPA and proxying `/api` to the backend, which runs as a Docker
+  container. Access is via SSM Session Manager only; there's no SSH.
+- **Releases:** a release is the backend image tarball plus the frontend
+  tarball in S3, keyed by a hash of the app code (`make version`). It's built
+  once in dev and promoted unchanged.
+- **Deploys:** `deploy` tests, builds, runs migrations on a short-lived
+  instance inside the VPC, replaces instances with no downtime, then smoke
+  tests with curl and a headless browser.
+- **Rollbacks:** `rollback` picks the previous release by default, or a
+  commit SHA or version, guarded by rules for published, proven, and
+  schema-compatible targets.
+- **CI:** every push to `dev` runs lint and tests; PRs into `main` lint the
+  workflows.
+- **Failures:** a failed deploy or rollback opens a
+  `[<env>] pipeline failure` issue that closes on the next success.
+
+Branches: `dev` holds the app, infra, and scripts and is promoted to
+`stage` and then `prod` by PR (both protected). `main` holds only the
+workflows.
+
 ## Environment variables
 
 Real `.env` files are gitignored. Each side documents its own
@@ -105,11 +138,27 @@ versioned API and are excluded from that schema:
 
 ```
 beacon/
-├── docs/3T-APP-DESIGN.md  # full design doc
+├── docs/
+│   ├── 3T-APP-DESIGN.md       # application design (Phase A)
+│   ├── CLOUD-DEVOPS-DESIGN.md # cloud & DevOps design (Phase B)
+│   └── RUNBOOK.md             # operating it on AWS
 ├── compose.dev.yml     # local Postgres only - not a deployment artifact
-├── backend/            # FastAPI app, Alembic migrations, tests
-└── frontend/           # React + Vite SPA
+├── backend/            # FastAPI app, Alembic migrations, tests, Dockerfile, seed
+├── frontend/           # React + Vite SPA
+├── infra/
+│   ├── project.env     # name prefixes, region, OIDC subject (one place)
+│   ├── bootstrap/      # state/releases buckets, deploy roles (IAM)
+│   ├── network/        # shared VPC, subnets, VPC endpoints
+│   └── env/            # per-environment ALB, ASG, RDS (+ environments/*.tfvars)
+├── ami/                # Packer base image: Nginx config, deploy/migrate host scripts
+├── scripts/
+│   ├── release/        # version + packaging
+│   ├── deploy/         # preflight, publish, migrations, rollout, smoke tests, rollback rules, seed
+│   └── bootstrap/      # state bucket creation
+└── .github/workflows/dev-ci.yml  # trigger stub: tests on every push to dev
 ```
+
+Workflows live on the `main` branch; see the runbook for the full list.
 
 See [3T-APP-DESIGN.md §5](docs/3T-APP-DESIGN.md#5-repository-layout) for the full
 backend/frontend layout and layering rules.
