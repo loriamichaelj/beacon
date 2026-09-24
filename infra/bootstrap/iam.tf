@@ -618,3 +618,69 @@ data "aws_iam_policy_document" "shared_network" {
     resources = ["${local.tfstate_arn}/env:/shared/*"]
   }
 }
+
+# --- Shared role: base AMI builds (ami/ via ami.yml) ---------------------------
+# Packer launches a build instance in a shared public subnet, snapshots it into
+# an AMI, and cleans up. Everything it creates carries Environment=shared +
+# Project (run_tags / tags in ami/beacon-base.pkr.hcl), so creation is allowed
+# by request tag and every later call (stop, modify, terminate, tag, delete the
+# temporary security group, deregister old AMIs) by the NetworkManageOwn
+# statement above. No key pair or instance profile is involved.
+
+resource "aws_iam_policy" "shared_ami" {
+  name   = "${local.iam_n}-deploy-shared-ami"
+  policy = data.aws_iam_policy_document.shared_ami.json
+}
+
+resource "aws_iam_role_policy_attachment" "shared_ami" {
+  role       = aws_iam_role.shared.name
+  policy_arn = aws_iam_policy.shared_ami.arn
+}
+
+data "aws_iam_policy_document" "shared_ami" {
+  statement {
+    sid       = "BuildCreateTagged"
+    actions   = ["ec2:RunInstances", "ec2:CreateImage"]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/Environment"
+      values   = ["shared"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/Project"
+      values   = [local.n]
+    }
+  }
+
+  statement {
+    sid       = "BuildTagOnCreate"
+    actions   = ["ec2:CreateTags"]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "ec2:CreateAction"
+      values   = ["RunInstances", "CreateImage"]
+    }
+  }
+
+  # The build volume and the AMI's snapshot are encrypted with the account's
+  # default EBS key; EC2 uses it on the caller's behalf.
+  statement {
+    sid = "EbsEncryptionViaEc2"
+    actions = [
+      "kms:CreateGrant",
+      "kms:Decrypt",
+      "kms:DescribeKey",
+      "kms:GenerateDataKeyWithoutPlaintext",
+      "kms:ReEncrypt*",
+    ]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["ec2.${var.aws_region}.amazonaws.com"]
+    }
+  }
+}

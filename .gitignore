@@ -33,6 +33,10 @@ coverage/
 tfplan
 crash.log
 
+# Packer (build manifest and local plugin cache)
+ami/manifest.json
+.packer.d/
+
 # Release packaging output
 build/
 
