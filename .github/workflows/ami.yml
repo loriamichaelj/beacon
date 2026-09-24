@@ -1,0 +1,111 @@
+name: ami
+run-name: ami build (${{ inputs.ref }})
+
+# Builds the shared base AMI with Packer (ami/ on the chosen ref) and publishes
+# its ID to SSM /<name_prefix>/base-ami-id, which every environment's launch
+# template reads (docs/CLOUD-DEVOPS-DESIGN.md §6.4). A new AMI reaches an
+# environment at its next instance refresh.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch whose ami/ code to build"
+        type: string
+        default: dev
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: ami
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: shared
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      # Exports every KEY=value in infra/project.env as KEY.
+      - name: Load project config
+        run: |
+          while IFS='=' read -r key value; do
+            case "${key}" in ''|'#'*) continue ;; esac
+            echo "${key}=${value}" >> "$GITHUB_ENV"
+          done < infra/project.env
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: ami-${{ github.run_id }}
+          # Public repo: keep the account ID out of the logs.
+          mask-aws-account-id: true
+
+      - uses: hashicorp/setup-packer@v3
+        with:
+          version: 1.16.1
+
+      # Throwaway SSH key for this build only: injected via user_data, deleted
+      # from the image by provision.sh, never registered as an AWS key pair.
+      - name: Generate build key
+        run: |
+          ssh-keygen -q -t ed25519 -N "" -C "packer-${GITHUB_RUN_ID}" -f "${RUNNER_TEMP}/packer_key"
+          {
+            echo "PKR_VAR_ssh_private_key_file=${RUNNER_TEMP}/packer_key"
+            echo "PKR_VAR_ssh_public_key=$(cat "${RUNNER_TEMP}/packer_key.pub")"
+            echo "PKR_VAR_aws_region=${AWS_REGION}"
+            echo "PKR_VAR_name_prefix=${NAME_PREFIX}"
+            echo "PKR_VAR_git_sha=$(git rev-parse --short HEAD)"
+          } >> "$GITHUB_ENV"
+
+      - name: Packer init and validate
+        working-directory: ami
+        run: |
+          packer init .
+          packer fmt -check -diff .
+          packer validate .
+
+      - name: Packer build
+        working-directory: ami
+        run: packer build -color=false -timestamp-ui .
+
+      - name: Publish AMI ID
+        working-directory: ami
+        run: |
+          ami_id="$(jq -r '.builds[-1].artifact_id' manifest.json | cut -d: -f2)"
+          case "${ami_id}" in
+            ami-*) ;;
+            *) echo "::error::No AMI ID in manifest.json (got '${ami_id}')"; exit 1 ;;
+          esac
+          param="/${NAME_PREFIX}/base-ami-id"
+          if aws ssm get-parameter --name "${param}" >/dev/null 2>&1; then
+            aws ssm put-parameter --name "${param}" --type String --value "${ami_id}" --overwrite >/dev/null
+          else
+            aws ssm put-parameter --name "${param}" --type String --value "${ami_id}" \
+              --tags "Key=Project,Value=${NAME_PREFIX}" "Key=Environment,Value=shared" "Key=ManagedBy,Value=ami.yml" >/dev/null
+          fi
+          {
+            echo "### Base AMI"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| AMI | \`${ami_id}\` |"
+            echo "| Published to | \`${param}\` |"
+            echo "| Source commit | \`${PKR_VAR_git_sha}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Published ${ami_id} to ${param}"
+
+      - name: Remove build key
+        if: always()
+        run: rm -f "${RUNNER_TEMP}/packer_key" "${RUNNER_TEMP}/packer_key.pub"
