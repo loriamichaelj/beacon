@@ -112,7 +112,8 @@ jobs:
           ref: ${{ needs.prepare.outputs.sha }}
           persist-credentials: false
 
-      - uses: astral-sh/setup-uv@v10
+      # setup-uv publishes exact release tags only (no floating v10 tag).
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           python-version: "3.12"
           enable-cache: true
