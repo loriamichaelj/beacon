@@ -1,0 +1,61 @@
+name: test
+run-name: test (${{ inputs.ref }})
+
+# Application lint + tests (make lint, make test), the one definition of "the
+# app is green". Reused by:
+#   deploy.yml  before building a dev release, and in validate mode
+#   dev-ci.yml  the trigger stub on dev: runs this on every push to dev
+# and runnable by hand for any branch or commit.
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Commit to test"
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch or commit to test"
+        type: string
+        default: dev
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Lint and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      # setup-uv publishes exact release tags only (no floating v10 tag).
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          (cd backend && uv sync --frozen --group dev)
+          (cd frontend && npm ci)
+
+      - name: Lint
+        run: make lint
+
+      # Backend integration tests start their own Postgres via testcontainers.
+      - name: Test
+        run: make test
