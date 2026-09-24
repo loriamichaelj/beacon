@@ -85,6 +85,13 @@ data "aws_iam_policy_document" "instance_boundary" {
       "ssm:GetDocument",
       "ssm:PutInventory",
       "ssm:PutComplianceItems",
+      "ssm:PutConfigurePackageResult",
+      "ssm:ListAssociations",
+      "ssm:DescribeAssociation",
+      "ssm:GetManifest",
+      "ssm:UpdateAssociationStatus",
+      "ssm:UpdateInstanceAssociationStatus",
+      "ssm:GetDeployablePatchSnapshotForInstance",
     ]
     resources = ["*"]
   }
@@ -365,6 +372,25 @@ data "aws_iam_policy_document" "env_compute" {
     }
   }
 
+  # Instances launched from the encrypted base AMI (migrator, ASG launch
+  # validation) need the account's default EBS key via EC2.
+  statement {
+    sid = "EbsEncryptionViaEc2"
+    actions = [
+      "kms:CreateGrant",
+      "kms:Decrypt",
+      "kms:DescribeKey",
+      "kms:GenerateDataKeyWithoutPlaintext",
+      "kms:ReEncrypt*",
+    ]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["ec2.${var.aws_region}.amazonaws.com"]
+    }
+  }
+
   statement {
     sid       = "RdsEncryptionViaService"
     actions   = ["kms:CreateGrant", "kms:DescribeKey"]
@@ -406,6 +432,9 @@ data "aws_iam_policy_document" "env_services" {
       "${local.arn_rds}:subgrp:${local.n}-${each.key}-*",
       "${local.arn_rds}:pg:${local.n}-${each.key}-*",
       "${local.arn_rds}:snapshot:${local.n}-${each.key}-*",
+      # AWS-owned default option group every PostgreSQL instance uses; it
+      # can't be modified, only referenced.
+      "${local.arn_rds}:og:default:*",
     ]
   }
 
