@@ -5,7 +5,7 @@ run-name: deploy ${{ inputs.environment || 'dev' }} (${{ inputs.mode || 'deploy'
 #
 #   prepare  resolve inputs, check out the exact commit, compute the release
 #            version (hash of the backend/ + frontend/ trees)
-#   test     make lint + make test                      (dev deploys, validate)
+#   test     make lint + make test via test.yml         (dev deploys, validate)
 #   build    package and publish the release to S3      (dev deploys only)
 #   deploy   preflight -> migrations -> release pointer -> instance refresh
 #            -> smoke tests, in the target environment
@@ -100,42 +100,14 @@ jobs:
           echo "sha=${sha}" >> "$GITHUB_OUTPUT"
           echo "Release ${version} from ${sha}"
 
+  # Same checks as every push to dev (test.yml, one definition of green).
   test:
     name: Lint and test
     needs: prepare
     if: needs.prepare.outputs.environment == 'dev' || needs.prepare.outputs.mode == 'validate'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.prepare.outputs.sha }}
-          persist-credentials: false
-
-      # setup-uv publishes exact release tags only (no floating v10 tag).
-      - uses: astral-sh/setup-uv@v10.2.0
-        with:
-          python-version: "3.12"
-          enable-cache: true
-          cache-dependency-glob: backend/uv.lock
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Install dependencies
-        run: |
-          (cd backend && uv sync --frozen --group dev)
-          (cd frontend && npm ci)
-
-      - name: Lint
-        run: make lint
-
-      # Backend integration tests start their own Postgres via testcontainers.
-      - name: Test
-        run: make test
+    uses: ./.github/workflows/test.yml
+    with:
+      ref: ${{ needs.prepare.outputs.sha }}
 
   build:
     name: Build and publish release
