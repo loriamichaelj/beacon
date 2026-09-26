@@ -6,6 +6,17 @@ tier, owning team, runbook) and **incidents** raised against them
 full CRUD, liveness/readiness endpoints, and a React UI for managing
 both resources.
 
+The UI includes:
+
+- an **Overview** dashboard: unresolved incidents by severity, median
+  time to mitigate and resolve, reopen rate, a daily chart of incidents
+  opened, the services needing attention, and recent activity;
+- a **timeline** on every incident: status and severity changes are
+  recorded automatically, and responders can add notes;
+- search, sortable columns, and filters kept in the URL, so a filtered
+  view can be bookmarked or shared;
+- light and dark themes that follow the OS by default.
+
 The repository covers two phases:
 
 - **Phase A, the application:** built and verified on localhost. See
@@ -60,8 +71,8 @@ make api   # http://localhost:8000
 make web   # http://localhost:5173
 ```
 
-Open http://localhost:5173 - it redirects to `/services`, seeded with
-8 services and 20 incidents in mixed states.
+Open http://localhost:5173 - it opens on the Overview dashboard, seeded with
+8 services and 20 incidents in mixed states, each with a timeline.
 
 ## Commands
 

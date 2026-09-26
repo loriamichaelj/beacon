@@ -6,23 +6,24 @@
 
 ---
 
-## Build Status (as of 2026-09-23)
+## Build Status (as of 2026-09-25)
 
 **Phase A is implemented on the `dev` branch.** Every checklist item in §15 is ticked, and all nine steps of the §14 plan are done. Phase B (container image, GitHub Actions, Terraform, AWS) has since been built and is deployed to dev; it is documented in `CLOUD-DEVOPS-DESIGN.md` and `RUNBOOK.md`, not here. The app-side changes it required are noted in §11.
 
 | Area | State |
 |---|---|
-| Backend (FastAPI, async SQLAlchemy) | Complete: services and incidents APIs, incident state machine, problem+json errors, JSON logging with request ID, `/healthz`, `/readyz`, `/metrics`, graceful SIGTERM handling |
-| Schema | Complete: two Alembic migrations (see §6.1) |
+| Backend (FastAPI, async SQLAlchemy) | Complete: services and incidents APIs, incident timeline events and notes, overview stats and activity feed, incident title search, incident state machine, problem+json errors, JSON logging with request ID, `/healthz`, `/readyz`, `/metrics`, graceful SIGTERM handling |
+| Schema | Complete: three Alembic migrations (see §6.1) |
 | Seed script | Complete and idempotent (`python -m scripts.seed`) |
-| Frontend (React, Vite, TanStack Query) | Complete: all §10.1 routes, zod-validated forms, loading/empty/error states, delete confirmation |
-| Tests | Backend: 38 test functions (unit: state machine; integration: services API, incidents API, health, migration round-trip, seed) against testcontainers Postgres. Frontend: 12 Vitest tests across 4 files |
+| Frontend (React, Vite, TanStack Query) | Complete: all §10.1 routes including the Overview dashboard, zod-validated forms, loading/empty/error states, delete confirmation, toasts, URL-persisted filters, light/dark themes |
+| Tests | Backend: 59 test functions (unit: state machine, stats buckets; integration: services API, incidents API, incident events API, stats API, health, migration round-trip and events backfill, seed) against testcontainers Postgres. Frontend: 38 Vitest tests across 8 files |
 | Tooling | `make lint` and `make build-web` verified today; lockfiles committed (`uv.lock`, `package-lock.json`) |
 | README | Written: setup, commands, env vars, pointer to §11 |
 
 **Verified on 2026-09-23:** `make lint` (ruff, ruff format, mypy strict on 26 source files, eslint, prettier) passes. The frontend tests pass (12 of 12) and `make build-web` produces `frontend/dist/`. The 11 backend unit tests pass. The Docker daemon was not running in that session, so the testcontainers-backed integration tests, coverage, and the "database stopped" health checks in §15 were **not re-run** that day. Their checkmarks reflect the earlier Phase A sign-off. Re-run `make test` with Docker up to reconfirm.
 
 **Deviations from the original design (all intentional):**
+- **Incident timeline pulled forward from v2 (2026-09-25).** The v1 non-goal "incident timeline/comments" (§2) and the §16 "timeline events" item are now built: migration `7c2e9a41d5b8` adds `incident_events` (§6.1) and backfills history from existing timestamps. It is additive only, so the previous release stays compatible with the schema during a rollout and after a rollback (`CLOUD-DEVOPS-DESIGN.md` §7.1.2). It is still not a full audit log: title/description edits aren't recorded, and there is no author until authentication exists.
 - **Two migrations, not one.** The schema in §6.1 is the *combined* result of `29430f6acafd` (initial schema) and `f945c88052c9` (adds `reopen_count`, the `incidents_resolved_requires_mitigated` constraint, and the tightened `incidents_time_order`). The second migration backfills `mitigated_at` on any pre-existing resolved rows. Its `downgrade()` restores the earlier constraints.
 - **Package manager is npm** (`package-lock.json`), not pnpm.
 - **Local Postgres is on host port 5434**, not 5432 (see §12).
@@ -57,7 +58,7 @@ The app is deliberately small but production-shaped: typed contracts, migrations
 - Authentication/authorization (API is open; assume network-level protection). Design must not preclude adding OIDC (e.g., Amazon Cognito) later.
 - Multi-tenancy.
 - Real-time updates (websockets/SSE).
-- Incident timeline/comments, paging integrations, notifications.
+- ~~Incident timeline/comments~~ (built 2026-09-25, see Build Status), paging integrations, notifications.
 - OpenTelemetry tracing (planned for v2; leave a clean seam for it).
 - Dockerfiles, GitHub Actions workflows, Terraform, and any AWS resources. These belong to Phase B (§2.1) and must not be created during the app build.
 
@@ -224,6 +225,22 @@ CREATE TRIGGER services_set_updated_at BEFORE UPDATE ON services
   FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE TRIGGER incidents_set_updated_at BEFORE UPDATE ON incidents
   FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- Added by 7c2e9a41d5b8: the incident timeline.
+CREATE TABLE incident_events (
+  id           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  incident_id  UUID NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+  kind         TEXT NOT NULL
+               CHECK (kind IN ('opened','status_changed','severity_changed','note')),
+  from_value   TEXT,     -- status_changed / severity_changed: the old value
+  to_value     TEXT,     -- the new value; for 'opened', the initial severity
+  body         TEXT,     -- note text
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT incident_events_note_body
+    CHECK (kind <> 'note' OR char_length(body) BETWEEN 1 AND 5000)
+);
+CREATE INDEX incident_events_incident_idx ON incident_events (incident_id, created_at);
+CREATE INDEX incident_events_created_at_idx ON incident_events (created_at DESC);
 ```
 
 ### 6.2 Design decisions
@@ -233,6 +250,7 @@ CREATE TRIGGER incidents_set_updated_at BEFORE UPDATE ON incidents
 - **Case-insensitive unique service name** via a functional index.
 - **Invariants live in the DB, not only in Python.** The DB is the last line of defense against bad writes from scripts or future services. This includes not just `resolved_at`/`status` consistency, but that a `resolved` incident must also carry a `mitigated_at`, and that `mitigated_at` can never be later than `resolved_at` — so a bypassed or buggy application layer (seed script, admin tool, future client) can't leave the timestamps in a state the API's own lifecycle would never produce.
 - **All timestamps are `TIMESTAMPTZ`, stored and returned in UTC** (ISO 8601 with `Z`).
+- **Timeline events are written by the service layer in the same transaction as the change they record**, so an incident never changes status without its event (or the reverse). Events cascade-delete with their incident. Their `BIGINT` identity key breaks ties between events written in one transaction (a single `PATCH` can change both severity and status) and isn't exposed in URLs. Rows from before the table existed are backfilled from `opened_at`/`mitigated_at`/`resolved_at`; earlier reopens can't be recovered.
 - **`reopen_count` instead of a full history.** Reopening nulls out `mitigated_at`/`resolved_at` (see §7), which would otherwise make it invisible that an incident was ever reopened at all. A single incrementing counter records the fact without building the full timeline/audit log that's explicitly out of scope for v1 (§2, §16).
 
 ## 7. Incident Lifecycle
@@ -317,11 +335,32 @@ List filters: `tier`, `owner_team`, `q` (case-insensitive substring match on nam
 | PATCH | `/incidents/{id}` | 200 | 404, 422 invalid transition |
 | DELETE | `/incidents/{id}` | 204 | 404 |
 
-List filters: `service_id`, `status` (repeatable), `severity` (repeatable), `opened_after`, `opened_before`.
+| GET | `/incidents/{id}/events` | 200 list, oldest first | 404 |
+| POST | `/incidents/{id}/events` | 201 (adds a note) | 404, 422 |
+
+List filters: `service_id`, `status` (repeatable), `severity` (repeatable), `opened_after`, `opened_before`, `q` (case-insensitive substring of the title; `%` and `_` match literally).
+
+**Events:** `opened`, `status_changed`, and `severity_changed` are recorded by the server; clients can only add a `note` (`{"body": "..."}`, 1–5000 characters after trimming).
 
 **IncidentCreate:** `service_id`, `title` (1–200), `severity`, `description` (optional, max 10000). Status always starts as `open`.
 **IncidentUpdate:** optional `title`, `description`, `severity`, `status`. A `status` change runs through the state machine.
 **IncidentRead:** all columns plus `service_name`, `time_to_mitigate_seconds`, `time_to_resolve_seconds`.
+
+### 8.3.1 Stats and activity
+
+| Method | Path | Success | Errors |
+|---|---|---|---|
+| GET | `/stats/overview?days=30&service_id=` | 200 | 422 (`days` outside 1–365) |
+| GET | `/activity?limit=10&service_id=` | 200 list, newest first | 422 (`limit` outside 1–50) |
+
+**OverviewStats**, for the window `[now - days, now)`:
+- `active`: unresolved incidents right now (not windowed), split into `open`/`mitigated` and by severity.
+- `opened`, `opened_previous` (the same-length window before), `resolved`, `reopened` (opened in the window and reopened at least once).
+- `median_time_to_mitigate_seconds` / `median_time_to_resolve_seconds`: medians over incidents mitigated / resolved inside the window; `null` when there are none.
+- `series`: incidents opened per UTC day (windows up to 31 days) or per week starting Monday UTC, by severity, with empty buckets filled in.
+- `hotspots`: up to 5 services with unresolved incidents, worst severity first, then most unresolved. Empty when scoped to one service.
+
+**Activity** items are timeline events plus `incident_title`, `incident_severity`, `service_id`, and `service_name`.
 
 ### 8.4 Health and Metrics (outside `/api/v1`, not in the public OpenAPI schema)
 
@@ -351,23 +390,24 @@ Health, readiness, and metrics requests are excluded from access logs and from r
 
 | Route | Page | Content |
 |---|---|---|
-| `/` | Redirect | Redirects to `/services` |
-| `/services` | Service list | Table (name, tier, owner, open incidents) with search, tier filter, pagination, and a "New service" button |
+| `/` | Overview | Unresolved incidents by severity, median time to mitigate/resolve, reopen rate, incidents opened per day (stacked by severity, with an accessible table), services needing attention, and recent activity. A 7/30/90-day window kept in the URL (`?days=`) |
+| `/services` | Service list | Table (name, tier, owner, open incidents, added) with search, tier filter, owner-team filter (click a team), sortable columns, pagination, and a "New service" button |
 | `/services/new` | Create form | Validated form |
-| `/services/:id` | Service detail | Fields, edit and delete actions, and the service's incidents |
+| `/services/:id` | Service detail | Fields, 30-day stats, "Report incident" (pre-selects the service), edit and delete actions, and the service's incidents (unresolved / resolved / all) |
 | `/services/:id/edit` | Edit form | Pre-filled form |
-| `/incidents` | Incident list | Table (title, service, severity, status, opened, TTR) with status and severity filters and pagination |
-| `/incidents/new` | Create form | Service picker, title, severity, description |
-| `/incidents/:id` | Incident detail | Fields plus status-transition buttons that show only the valid next states from §7 |
+| `/incidents` | Incident list | Table (title, service, severity, status, opened, TTR or time so far) with title search, service, status, and severity filters, sortable columns, and pagination. Filters live in the URL |
+| `/incidents/new` | Create form | Service picker (pre-selected from `?service=`), title, severity with what each level means, description |
+| `/incidents/:id` | Incident detail | Fields, the service's runbook link, status-transition buttons that show only the valid next states from §7, edit (title, severity, description) and delete actions, and the timeline with a note composer |
+| `*` | Not found | Link back to the overview |
 
 ### 10.2 Behavior
 - **API client:** a single typed `fetch` wrapper in `src/api/`. It parses problem+json into a typed `ApiError`, attaches `X-Request-ID`, and uses a base URL from `import.meta.env.VITE_API_BASE_URL` with default `/api/v1`.
 - **Data fetching:** TanStack Query for all server state. Invalidate list queries after mutations. No global state library.
 - **Forms:** zod schemas mirror backend constraints. Server-side 422 errors map back onto their form fields.
-- **UX states:** every data view handles loading, empty, and error states. Delete requires confirmation. A `409` on service delete shows the server's `detail` message.
+- **UX states:** every data view handles loading, empty, and error states. Delete requires confirmation. A `409` on service delete shows the server's `detail` message. Successful mutations confirm with a toast.
 - **Accessibility:** semantic HTML, labeled inputs, keyboard-operable dialogs.
 - **Branding:** app name "Beacon" in the header and `<title>` (e.g., "Services · Beacon"). No third-party logos.
-- **Styling:** minimal and clean. Plain CSS modules or a single lightweight approach; no heavy UI framework required.
+- **Styling:** a single global stylesheet (`src/styles.css`) built on CSS custom-property tokens, no UI framework. Light and dark themes follow the OS; the header toggle overrides it (`<html data-theme>`, remembered in `localStorage`). Severity, status, and tier badges always carry a text label; color is only a cue. The chart is hand-rolled SVG (no charting dependency), using a one-hue ordinal ramp validated for both themes.
 - **Build output:** fully static (`dist/`), with no runtime Node server required.
 
 > **Note:** `VITE_*` variables are baked in at build time. The default of a same-origin relative `/api/v1` avoids needing per-environment builds and CORS. Keep it that way unless there's a strong reason not to.
@@ -487,7 +527,7 @@ Build in this order. Each phase must pass its checks before starting the next. *
 
 - OIDC authentication (Amazon Cognito or another OIDC provider) and role-based write access.
 - OpenTelemetry traces and metrics (FastAPI, SQLAlchemy, and fetch instrumentation), exportable via the AWS Distro for OpenTelemetry collector.
-- Incident timeline events and an audit log table.
+- A full audit log table (who changed what, including title/description edits). Timeline events shipped early; see Build Status.
 - Optimistic concurrency control on `PATCH` via `ETag` / `If-Match`.
 - Cursor-based pagination for large incident histories.
 - SLO dashboards: API availability and p95 latency per route.
