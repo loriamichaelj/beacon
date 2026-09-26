@@ -1,7 +1,7 @@
 # Cloud & DevOps Design: Beacon — Phase B
 
 **Author:** M.L.
-**Status:** v3 — implemented and live in **dev** (see §0); stage and prod designed but not provisioned. Decisions in §10.
+**Status:** v3 — implemented and live in **dev** (see §0); stage and prod designed but not provisioned. Decisions in §10. Final work (HTTPS, load testing, security scanning, SonarQube) scoped in §11, not yet built.
 **Depends on:** `3T-APP-DESIGN.md` (application design, Phase A). This document assumes Phase A is complete: the app runs correctly on localhost, satisfies its Operational Contract (§11 of `3T-APP-DESIGN.md`), and its CI-readiness requirements (§13.1) are met.
 **Scope:** Branch strategy, pipeline/workflow strategy, environment strategy, and infrastructure strategy for deploying Beacon to AWS on EC2. Excludes Kubernetes/EKS, ECS/Fargate, container registries, and multi-region — those are explicitly out of scope for this phase. (The backend does run as a single Docker container per instance; §6.4.)
 
@@ -23,7 +23,8 @@
 | Notifications (§4.5) | ✅ GitHub-only: failure issue per environment, auto-closed on recovery |
 | Dev seed data | ✅ `seed.yml` (dev only) |
 | Stage / prod | ⏸ Not provisioned (scope decision). The PR-trigger stub and validate mode (§3.4) aren't built, since they need stage infra to run |
-| DNS / HTTPS (§6.7) | ⏸ Deferred until a domain exists |
+| DNS / HTTPS (§6.7) | ⏸ Deferred until a domain exists; plan in §11.1 (domain to be registered in Route 53) |
+| Load testing, Trivy, Checkov, SonarQube | 📝 Scoped in §11, not built |
 
 ## 1. Summary
 
@@ -561,10 +562,12 @@ A **reason** is required and recorded in the job summary with the requester. **`
 
 ## 9. Open Items
 
-1. **Domain name** (§6.7) — deferred. `beacon.example.com` is a placeholder. Register the real domain in Route 53 (or register elsewhere and delegate the hosted zone to Route 53) before `terraform.yml -target=dns` can be applied.
+1. **Domain name** (§6.7) — decided: register a new domain in Route 53 (§11.1, decision 22). The name itself is still open; `beacon.example.com` remains a placeholder until it's registered.
 2. ~~**Notification target**~~: resolved; GitHub-only (§4.5).
 3. **Wait timer on prod's Environment protection rule** (§5.1): yes/no, and duration if yes. Moot until prod is provisioned.
 4. ~~**Exact smoke-test assertions**~~: resolved. `smoke-test.sh` checks `/readyz` (with warm-up retries), `/healthz`, an API list call, the SPA and its fallback route, and `/metrics` returning 404. `browser-smoke/smoke.mjs` checks, in headless Chromium, the lists, detail pages, service picker, and forms, failing on any page error, console error, or API error.
+5. **Workflow PRs into `main`** (§11.6) — the final work needs new and changed workflows on `main`, which means PRs from `workflows/*` branches. To be confirmed before that work starts.
+6. **ASG scaling policy** (§11.2) — whether to add a target-tracking policy so the load test can exercise scale-out.
 
 ## 10. Decision Log
 
@@ -591,3 +594,88 @@ A **reason** is required and recorded in the job summary with the requester. **`
 | 19 | Keep the newest 3 base AMIs; keep all releases. | AMIs cost storage and are rebuildable; releases are rollback targets. | — |
 | 20 | Dev-only scope: stage and prod aren't provisioned. | Cost; every mechanism is proven in dev (§0). | — |
 | 21 | Infra, AMI, and deploy scripts stay on the app branches (not moved to `main` or a separate repo). | Considered and deferred: moving them would decouple infra promotion from app promotion (principle 2), but it's a larger change. The repo layout can change later without touching AWS. | — |
+| 22 | HTTPS via a new domain registered in Route 53, with an ACM wildcard certificate (§11.1). *Decided, not built.* | Keeps the §6.7 design as written. Rejected: delegating a subdomain of an existing domain; CloudFront on its default `*.cloudfront.net` name (no domain needed, but the CloudFront→ALB leg stays HTTP and the architecture changes). | Open item 1 (domain deferred) |
+| 23 | "ALB testing" means a k6 load test through the ALB, run on demand (§11.2). *Decided, not built.* | Chosen scope. Post-deploy ALB assertion suites and `terraform test` were considered and not selected; the redirect and TLS checks HTTPS needs go into `smoke-test.sh` instead. | — |
+| 24 | Trivy and Checkov start report-only: SARIF to GitHub code scanning, no failing builds; gates follow triage (§11.3). *Decided, not built.* | The first run will surface a backlog (dev-only settings, missing logs/WAF); failing every build on day one would block unrelated work. | — |
+| 25 | SonarQube Cloud, not self-hosted (§11.4). *Decided, not built.* | Free for a public repo and nothing to operate; self-hosted means an always-on, publicly reachable EC2 instance (~$30/mo+). | — |
+
+## 11. Final Work (scoped 2026-09-25, not built)
+
+Four workstreams remain. Decisions 22–25 (§10) record the choices; open items 1, 5, and 6 (§9) are what's still undecided. Order: **§11.3 → §11.4 → §11.1 → §11.2**. Scanning needs no AWS or domain and its findings may shape the HTTPS Terraform; SonarQube follows once its token exists; HTTPS follows domain registration; the load test runs last, against the final HTTPS setup.
+
+| Workstream | Blocked on | Relative size |
+|---|---|---|
+| §11.3 Trivy + Checkov | Open item 5 (PRs into `main`) | Largest: most of it is triaging the first results |
+| §11.4 SonarQube Cloud | Project and `SONAR_TOKEN` (manual) | Small |
+| §11.1 HTTPS | Domain registration (manual) | Medium |
+| §11.2 k6 load test | §11.1; open item 6 for scale-out | Small to medium |
+
+### 11.1 HTTPS (implements §6.7)
+
+ACM can't issue certificates for `*.elb.amazonaws.com`, so HTTPS needs a domain. Decision 22: register one in Route 53.
+
+**Manual, one-off (not scripted):**
+- Pick the name and register it in the Console (Route 53 → Registered domains). Registration is a purchase with registrant contact details, so it's a deliberate human step, like the OIDC bootstrap (decision 2).
+- The AWS account is shared: confirm it permits domain registration and who pays. Cost: about $14/yr for a `.com`, plus $0.50/mo for the hosted zone.
+- Registration creates the hosted zone automatically.
+
+**Build:**
+1. **Bootstrap IAM:** grant `beacon-deploy-shared` ACM (request, describe, delete certificates) and Route 53 record permissions scoped to the hosted zone. The deploy roles have neither today. Applied by `bootstrap.yml` (reviewer-gated).
+2. **`infra/dns` (new root):** references the registered zone through a data source (§6.7.2 already allows this) rather than creating one; requests the wildcard ACM certificate with DNS validation; outputs the certificate ARN and zone ID. Applied via `terraform.yml target=dns`, which already exists.
+3. **`infra/env`:** a 443 listener with `ELBSecurityPolicy-TLS13-1-2-2021-06`; the port 80 listener switches from `forward` to a 301 redirect (§6.7.3); an alias record for `dev.<domain>`; the app URL as a Terraform output. The ALB security group already allows 443 (decision 9). The target group and `/readyz` health check are unchanged (§6.7.4).
+4. **Smoke tests:** `smoke-test.sh` and `browser-smoke/smoke.mjs` currently look up the ALB DNS name, which won't match the certificate. They move to `https://dev.<domain>`. `smoke-test.sh` also gains three checks: HTTP → 301 to HTTPS, a valid certificate for the hostname, and TLS 1.0/1.1 refused, so HTTPS can't silently regress.
+5. **Optional:** an HSTS header in Nginx, sent only when `X-Forwarded-Proto` is `https`.
+6. **Docs:** §6.7 (real domain in place of the placeholder), §0, the runbook.
+
+The app is unaffected (§6.7.6). HTTPS also makes `crypto.randomUUID` available to the browser; the fallback in `frontend/src/api/client.ts` stays, since it's harmless.
+
+### 11.2 ALB testing: k6 load test
+
+Decision 23: an on-demand k6 run through the ALB.
+
+- **`loadtest.yml` (new, on `main`):** `workflow_dispatch` only, never part of every deploy. Runs k6 on a GitHub-hosted runner against the public dev URL (HTTPS once §11.1 lands), so the path is internet → ALB → Nginx → API → RDS. Inputs: duration, peak virtual users, and a write-mode switch.
+- **Script (on `dev`, e.g. `scripts/loadtest/`):**
+  - The default scenario is read-only: Overview stats, activity, service and incident lists, detail pages. It ramps up, holds, and ramps down.
+  - The optional write scenario creates incidents, transitions them, adds notes, and deletes them afterwards, so dev data stays clean.
+- **Thresholds (proposed):** p95 latency under 500 ms and under 1% errors. Results (latency percentiles, request rate, error rate) go to the job summary.
+- **Scale-out:** the ASG has no scaling policy today (dev: 1 instance, max 2). Testing scale-out first needs a target-tracking policy in `infra/env` (CPU, or `ALBRequestCountPerTarget`), open item 6. With it, the run also asserts that a second instance registers healthy mid-run and that no requests fail while it does.
+- **Caveat:** dev runs one `t3.micro` and a `db.t4g.micro`, so the numbers describe dev, not a production capacity plan.
+
+### 11.3 Trivy and Checkov (report-only)
+
+Decision 24: findings are reported, not enforced, until triaged.
+
+- **`security.yml` (new, reusable, on `main`):** called on every push to `dev` (through the `dev-ci.yml` stub, like `test.yml`) and inside `deploy.yml`. Uploads SARIF to GitHub code scanning (free for public repos; needs `security-events: write`). Steps don't fail the job.
+- **Trivy:**
+  - dependencies (`backend/uv.lock`, `frontend/package-lock.json`);
+  - committed secrets;
+  - the backend image in `deploy.yml`, after `docker build` and before publish.
+- **Checkov:** Terraform (`infra/`), the backend Dockerfile, and the GitHub Actions workflows.
+- **Config (on `dev`, promoted with the code):** `trivy.yaml` and `.checkov.yaml`. Suppressions are inline skips with a written reason (`#checkov:skip=<ID>: <reason>`).
+- **Expected first-run backlog:** ALB access logs off, no WAF, the HTTP listener not redirecting (fixed by §11.1), dev-only settings (deletion protection off, single-AZ RDS, 1-day backups), S3 and KMS details, and OS CVEs in `python:3.12-slim`. Some fixes cost money: WAF is roughly $6/mo or more; ALB access logs and VPC flow logs cost pennies.
+- **Then:** triage each finding (fix, or skip with a reason), and switch to gating: Trivy fails on fixable HIGH/CRITICAL, Checkov fails on anything unfixed and unskipped. The image scan gate then stops a vulnerable image from being published.
+- **Optional:** an SBOM (CycloneDX) stored with each release in S3; a scheduled rescan of the running release, since new CVEs appear after release.
+
+### 11.4 SonarQube Cloud
+
+Decision 25: SonarQube Cloud, free for this public repo.
+
+- **Manual:** sign in at sonarcloud.io with GitHub and import `loriamichaelj/beacon`; set the project's main branch to **`dev`** (Sonar assumes code lives on the default branch, but `main` holds only workflows); turn off Automatic Analysis, since CI-based analysis is needed for coverage; add the `SONAR_TOKEN` repository secret.
+- **On `dev`:** `sonar-project.properties` (sources, tests, exclusions); frontend coverage via `@vitest/coverage-v8` writing lcov (the backend already writes `backend/reports/coverage.xml`).
+- **On `main`:** a scan step in `test.yml` after the tests, so every push to `dev` and every deploy is analyzed.
+- **Quality gate:** starts report-only, consistent with decision 24; enforced after the first baseline.
+
+### 11.5 Cost summary
+
+| Item | Cost |
+|---|---|
+| Domain (`.com`) | ~$14/yr |
+| Route 53 hosted zone | $0.50/mo |
+| ACM certificate | Free |
+| Trivy, Checkov, k6, GitHub code scanning | Free (open source, public repo, GitHub-hosted runners) |
+| SonarQube Cloud | Free (public repo) |
+| Optional, from Checkov triage | WAF ~$6/mo+; ALB access logs and VPC flow logs, pennies |
+
+### 11.6 Where changes land
+
+As in decisions 12 and 17: workflows go on `main` by PR from a `workflows/*` branch, each needing the **Lint workflows** check (open item 5); Terraform, scanner and Sonar configuration, k6 scripts, and smoke-test changes go on `dev` and promote with the app.
