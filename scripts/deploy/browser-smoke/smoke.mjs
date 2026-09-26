@@ -73,9 +73,17 @@ async function step(name, fn) {
   }
 }
 
-await step("/ redirects to /services", async () => {
+// `/` is the Overview dashboard. Releases before it redirected to /services;
+// accept both, since a rollback runs this script against an older release.
+await step("/ landing page", async () => {
   await page.goto(`${base}/`);
-  await page.waitForURL((url) => url.pathname === "/services");
+  await page.getByRole("heading", { name: /^(Overview|Services)$/ }).first().waitFor();
+  if (new URL(page.url()).pathname === "/services") return "redirected to /services";
+  await page.locator("article, [role=alert]").first().waitFor();
+  await page.waitForLoadState("networkidle");
+  const alert = page.locator("[role=alert]");
+  if (await alert.count()) throw new Error(`/: error state: ${await alert.first().innerText()}`);
+  return "overview";
 });
 await step("/services list", async () => `${await checkList("/services", "Services")} rows`);
 await step("service detail", () => checkFirstDetail("/services"));
