@@ -69,3 +69,56 @@ export const VALID_TRANSITIONS: Record<IncidentStatus, IncidentStatus[]> = {
   mitigated: ["open", "resolved"],
   resolved: ["open"],
 };
+
+export type IncidentEventKind = "opened" | "status_changed" | "severity_changed" | "note";
+
+/**
+ * One timeline entry. `kind` decides which fields are set: `opened` carries the
+ * initial severity in `to_value`; the two `*_changed` kinds use `from_value` ->
+ * `to_value`; `note` carries `body`.
+ */
+export interface IncidentEvent {
+  id: number;
+  incident_id: string;
+  kind: IncidentEventKind;
+  from_value: string | null;
+  to_value: string | null;
+  body: string | null;
+  created_at: string;
+}
+
+export interface ActivityEvent extends IncidentEvent {
+  incident_title: string;
+  incident_severity: IncidentSeverity;
+  service_id: string;
+  service_name: string;
+}
+
+export type SeverityCounts = Record<IncidentSeverity, number>;
+
+export interface SeriesPoint {
+  start: string;
+  total: number;
+  by_severity: SeverityCounts;
+}
+
+export interface Hotspot {
+  service_id: string;
+  service_name: string;
+  tier: number;
+  active: number;
+  worst_severity: IncidentSeverity;
+}
+
+export interface OverviewStats {
+  window: { days: number; start: string; end: string; bucket: "day" | "week" };
+  active: { open: number; mitigated: number; by_severity: SeverityCounts };
+  opened: number;
+  opened_previous: number;
+  resolved: number;
+  reopened: number;
+  median_time_to_mitigate_seconds: number | null;
+  median_time_to_resolve_seconds: number | null;
+  series: SeriesPoint[];
+  hotspots: Hotspot[];
+}

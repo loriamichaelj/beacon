@@ -1,4 +1,5 @@
 import { screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 
@@ -64,5 +65,25 @@ describe("ServiceListPage", () => {
     renderWithProviders(<ServiceListPage />);
 
     expect(await screen.findByText("Something broke.")).toBeInTheDocument();
+  });
+
+  it("filters by owner team when a team is clicked", async () => {
+    const teams: (string | null)[] = [];
+    server.use(
+      http.get("/api/v1/services", ({ request }) => {
+        teams.push(new URL(request.url).searchParams.get("owner_team"));
+        return HttpResponse.json({ items: [service], total: 1, limit: 20, offset: 0 });
+      }),
+    );
+
+    renderWithProviders(<ServiceListPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "payments" }));
+
+    expect(await screen.findByText("Team: payments")).toBeInTheDocument();
+    expect(teams.at(-1)).toBe("payments");
+
+    await userEvent.click(screen.getByRole("button", { name: /remove team filter/i }));
+    expect(screen.queryByText("Team: payments")).not.toBeInTheDocument();
+    expect(teams.at(-1)).toBeNull();
   });
 });

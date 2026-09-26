@@ -1,35 +1,25 @@
-import { screen } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 
+import { makeEvent, makeIncident, makeService, page } from "../../test/fixtures";
 import { server } from "../../test/server";
 import { renderWithProviders } from "../../test/utils";
-import type { Incident, IncidentStatus } from "../../types/api";
+import type { IncidentEvent, IncidentStatus } from "../../types/api";
 import IncidentDetailPage from "./IncidentDetailPage";
 
-function makeIncident(status: IncidentStatus, reopenCount = 0): Incident {
-  return {
-    id: "i1",
-    service_id: "s1",
-    service_name: "checkout-api",
-    title: "Elevated errors",
-    description: null,
-    severity: "SEV2",
-    status,
-    opened_at: "2026-01-01T00:00:00Z",
-    mitigated_at: status !== "open" ? "2026-01-01T01:00:00Z" : null,
-    resolved_at: status === "resolved" ? "2026-01-01T02:00:00Z" : null,
-    reopen_count: reopenCount,
-    created_at: "2026-01-01T00:00:00Z",
-    updated_at: "2026-01-01T00:00:00Z",
-    time_to_mitigate_seconds: status !== "open" ? 3600 : null,
-    time_to_resolve_seconds: status === "resolved" ? 7200 : null,
-  };
-}
-
-function renderIncident(status: IncidentStatus, reopenCount = 0) {
+function renderIncident(
+  status: IncidentStatus,
+  reopenCount = 0,
+  events: IncidentEvent[] = [makeEvent()],
+) {
   server.use(
     http.get("/api/v1/incidents/:id", () => HttpResponse.json(makeIncident(status, reopenCount))),
+    http.get("/api/v1/incidents/:id/events", () => HttpResponse.json(page(events))),
+    http.get("/api/v1/services/:id", () =>
+      HttpResponse.json(makeService({ runbook_url: "https://runbooks.example.com/checkout" })),
+    ),
   );
   return renderWithProviders(<IncidentDetailPage />, {
     route: "/incidents/i1",
@@ -61,13 +51,99 @@ describe("IncidentDetailPage transition buttons", () => {
     expect(screen.queryByRole("button", { name: /mark as mitigated/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /mark as resolved/i })).not.toBeInTheDocument();
   });
+
+  it("sends the transition and confirms it", async () => {
+    let body: unknown;
+    server.use(
+      http.patch("/api/v1/incidents/:id", async ({ request }) => {
+        body = await request.json();
+        return HttpResponse.json(makeIncident("mitigated"));
+      }),
+    );
+    renderIncident("open");
+
+    await userEvent.click(await screen.findByRole("button", { name: /mark as mitigated/i }));
+
+    expect(await screen.findByText("Incident marked mitigated.")).toBeInTheDocument();
+    expect(body).toEqual({ status: "mitigated" });
+  });
 });
 
-describe("IncidentDetailPage reopen count", () => {
-  it("renders the reopen count from the API response", async () => {
+describe("IncidentDetailPage details", () => {
+  it("renders the reopen count and the service's runbook", async () => {
     renderIncident("open", 2);
 
-    expect(await screen.findByText("Reopened")).toBeInTheDocument();
-    expect(screen.getByText("2 time(s)")).toBeInTheDocument();
+    expect(await screen.findByText("2 time(s)")).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: /open runbook/i })).toHaveAttribute(
+      "href",
+      "https://runbooks.example.com/checkout",
+    );
+  });
+});
+
+describe("IncidentDetailPage timeline", () => {
+  it("describes each event", async () => {
+    renderIncident("mitigated", 0, [
+      makeEvent({ id: 1 }),
+      makeEvent({ id: 2, kind: "severity_changed", from_value: "SEV3", to_value: "SEV1" }),
+      makeEvent({ id: 3, kind: "status_changed", from_value: "open", to_value: "mitigated" }),
+      makeEvent({ id: 4, kind: "note", to_value: null, body: "Rolled back the deploy." }),
+    ]);
+
+    const timeline = within(await screen.findByRole("list"));
+    expect(timeline.getByText("Opened as SEV2")).toBeInTheDocument();
+    expect(timeline.getByText("Escalated from SEV3 to SEV1")).toBeInTheDocument();
+    expect(timeline.getByText("Marked mitigated")).toBeInTheDocument();
+    expect(timeline.getByText("Rolled back the deploy.")).toBeInTheDocument();
+  });
+
+  it("posts a trimmed note and clears the box", async () => {
+    let posted: unknown;
+    server.use(
+      http.post("/api/v1/incidents/:id/events", async ({ request }) => {
+        posted = await request.json();
+        return HttpResponse.json(makeEvent({ id: 9, kind: "note", body: "Paged on-call." }), {
+          status: 201,
+        });
+      }),
+    );
+    renderIncident("open");
+
+    const box = await screen.findByLabelText(/add a note/i);
+    const submit = screen.getByRole("button", { name: /add note/i });
+    expect(submit).toBeDisabled();
+
+    await userEvent.type(box, "  Paged on-call.  ");
+    await userEvent.click(submit);
+
+    expect(await screen.findByText("Note added.")).toBeInTheDocument();
+    expect(posted).toEqual({ body: "Paged on-call." });
+    expect(box).toHaveValue("");
+  });
+});
+
+describe("IncidentDetailPage edit", () => {
+  it("saves title and severity changes", async () => {
+    let body: unknown;
+    server.use(
+      http.patch("/api/v1/incidents/:id", async ({ request }) => {
+        body = await request.json();
+        return HttpResponse.json(makeIncident("open"));
+      }),
+    );
+    renderIncident("open");
+
+    await userEvent.click(await screen.findByRole("button", { name: /^edit$/i }));
+    const dialog = within(await screen.findByRole("dialog"));
+    const title = dialog.getByLabelText(/title/i);
+    await userEvent.clear(title);
+    await userEvent.type(title, "Checkout 502s");
+    await userEvent.click(dialog.getByRole("radio", { name: /SEV1/ }));
+    await userEvent.click(dialog.getByRole("button", { name: /save changes/i }));
+
+    await waitFor(() =>
+      expect(body).toEqual({ title: "Checkout 502s", severity: "SEV1", description: null }),
+    );
+    expect(await screen.findByText("Incident updated.")).toBeInTheDocument();
   });
 });

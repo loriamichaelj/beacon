@@ -3,6 +3,8 @@ import { render } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
+import { ToastProvider } from "../components/Toasts";
+
 interface RenderOptions {
   route?: string;
   path?: string;
@@ -25,9 +27,11 @@ export function renderWithProviders(
         initialEntries={[route]}
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
-        <Routes>
-          <Route path={path} element={ui} />
-        </Routes>
+        <ToastProvider>
+          <Routes>
+            <Route path={path} element={ui} />
+          </Routes>
+        </ToastProvider>
       </MemoryRouter>
     </QueryClientProvider>,
   );

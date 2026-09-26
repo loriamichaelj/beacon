@@ -27,14 +27,19 @@ export function useService(id: string | undefined) {
   });
 }
 
+/** A service's name and tier also show up in stats and the activity feed. */
+function invalidateServiceViews(queryClient: ReturnType<typeof useQueryClient>) {
+  void queryClient.invalidateQueries({ queryKey: ["services"] });
+  void queryClient.invalidateQueries({ queryKey: ["stats"] });
+  void queryClient.invalidateQueries({ queryKey: ["activity"] });
+}
+
 export function useCreateService() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: ServiceCreateInput) =>
       apiRequest<Service>("/services", { method: "POST", body: input }),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["services"] });
-    },
+    onSuccess: () => invalidateServiceViews(queryClient),
   });
 }
 
@@ -43,9 +48,7 @@ export function useUpdateService(id: string) {
   return useMutation({
     mutationFn: (input: ServiceUpdateInput) =>
       apiRequest<Service>(`/services/${id}`, { method: "PATCH", body: input }),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["services"] });
-    },
+    onSuccess: () => invalidateServiceViews(queryClient),
   });
 }
 
@@ -53,8 +56,6 @@ export function useDeleteService() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => apiRequest<void>(`/services/${id}`, { method: "DELETE" }),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["services"] });
-    },
+    onSuccess: () => invalidateServiceViews(queryClient),
   });
 }

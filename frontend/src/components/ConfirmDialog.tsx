@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { Dialog } from "./Dialog";
 
 interface ConfirmDialogProps {
   open: boolean;
@@ -17,35 +17,17 @@ export function ConfirmDialog({
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
-  const ref = useRef<HTMLDialogElement>(null);
-
-  useEffect(() => {
-    const dialog = ref.current;
-    if (!dialog) return;
-    if (open && !dialog.open) {
-      dialog.showModal();
-    } else if (!open && dialog.open) {
-      dialog.close();
-    }
-  }, [open]);
-
   return (
-    <dialog
-      ref={ref}
-      className="confirm-dialog"
-      aria-labelledby="confirm-dialog-title"
-      onCancel={onCancel}
-    >
-      <h2 id="confirm-dialog-title">{title}</h2>
-      <p>{message}</p>
-      <div className="confirm-dialog-actions">
-        <button type="button" onClick={onCancel}>
+    <Dialog open={open} title={title} onClose={onCancel}>
+      <p className="dialog-message">{message}</p>
+      <div className="dialog-actions">
+        <button type="button" className="button" onClick={onCancel}>
           Cancel
         </button>
-        <button type="button" className="button-danger" onClick={onConfirm}>
+        <button type="button" className="button button-danger" onClick={onConfirm}>
           {confirmLabel}
         </button>
       </div>
-    </dialog>
+    </Dialog>
   );
 }

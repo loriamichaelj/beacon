@@ -3,37 +3,47 @@ import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 
+import { makeService, makeStats, page } from "../../test/fixtures";
 import { server } from "../../test/server";
 import { renderWithProviders } from "../../test/utils";
 import ServiceDetailPage from "./ServiceDetailPage";
 
-const service = {
-  id: "s1",
-  name: "checkout-api",
-  tier: 1,
-  owner_team: "payments",
-  runbook_url: null,
-  description: null,
-  created_at: "2026-01-01T00:00:00Z",
-  updated_at: "2026-01-01T00:00:00Z",
-  open_incident_count: 1,
-};
+const service = makeService({ open_incident_count: 1 });
 
 function mockServiceWithNoIncidents() {
   server.use(
     http.get("/api/v1/services/:id", () => HttpResponse.json(service)),
-    http.get("/api/v1/incidents", () =>
-      HttpResponse.json({ items: [], total: 0, limit: 50, offset: 0 }),
+    http.get("/api/v1/incidents", () => HttpResponse.json(page([]))),
+    http.get("/api/v1/stats/overview", () =>
+      HttpResponse.json(makeStats({ opened: 3, median_time_to_resolve_seconds: 5400 })),
     ),
   );
 }
 
-async function openDetailAndClickDelete() {
+function renderDetail() {
   renderWithProviders(<ServiceDetailPage />, { route: "/services/s1", path: "/services/:id" });
+}
+
+async function openDetailAndClickDelete() {
+  renderDetail();
   expect(await screen.findByRole("heading", { name: "checkout-api" })).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: /^delete$/i }));
   return screen.findByRole("dialog");
 }
+
+describe("ServiceDetailPage", () => {
+  it("shows the service's 30-day stats and links to report an incident for it", async () => {
+    mockServiceWithNoIncidents();
+    renderDetail();
+
+    expect(await screen.findByText("1h 30m")).toBeInTheDocument();
+    expect(screen.getByRole("article", { name: "Opened in 30 days" })).toHaveTextContent("3");
+    expect(screen.getByRole("link", { name: /report incident/i })).toHaveAttribute(
+      "href",
+      "/incidents/new?service=s1",
+    );
+  });
+});
 
 describe("ServiceDetailPage delete flow", () => {
   it("requires confirmation before calling delete", async () => {
