@@ -1,6 +1,6 @@
 # Beacon
 
-Beacon is a minimal three-tier web app that tracks **services** (name,
+Beacon is a three-tier web app that tracks **services** (name,
 tier, owning team, runbook) and **incidents** raised against them
 (severity, status, timestamps). It exposes a versioned REST API with
 full CRUD, liveness/readiness endpoints, and a React UI for managing
