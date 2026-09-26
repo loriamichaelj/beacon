@@ -36,11 +36,14 @@ async def list_incidents(
     severities: Sequence[str] | None,
     opened_after: datetime | None,
     opened_before: datetime | None,
+    q: str | None,
     sort: str,
     limit: int,
     offset: int,
 ) -> tuple[list[tuple[Incident, str]], int]:
     filters: list[ColumnElement[bool]] = []
+    if q:
+        filters.append(func.lower(Incident.title).contains(q.lower(), autoescape=True))
     if service_id is not None:
         filters.append(Incident.service_id == service_id)
     if statuses:
@@ -81,9 +84,11 @@ async def get_incident(session: AsyncSession, incident_id: UUID) -> tuple[Incide
 
 
 async def create_incident(session: AsyncSession, data: dict[str, object]) -> Incident:
+    """Insert without committing, so the caller can commit it together with
+    its timeline event."""
     incident = Incident(**data)
     session.add(incident)
-    await session.commit()
+    await session.flush()
     await session.refresh(incident)
     return incident
 

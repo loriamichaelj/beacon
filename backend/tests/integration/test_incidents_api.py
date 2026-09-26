@@ -165,3 +165,17 @@ def test_delete_service_with_incidents_returns_409(client: TestClient) -> None:
     resp = client.delete(f"/api/v1/services/{service['id']}")
     assert resp.status_code == 409
     assert "incident" in resp.json()["detail"].lower()
+
+
+def test_search_incidents_by_title(client: TestClient) -> None:
+    service = _create_service(client)
+    _create_incident(client, service["id"], title="Checkout latency spike")
+    _create_incident(client, service["id"], title="Disk full on 100% of nodes")
+
+    resp = client.get("/api/v1/incidents", params={"q": "LATENCY"})
+    assert [i["title"] for i in resp.json()["items"]] == ["Checkout latency spike"]
+    # LIKE wildcards in the search are literal characters, not patterns.
+    resp = client.get("/api/v1/incidents", params={"q": "100%"})
+    assert resp.json()["total"] == 1
+    resp = client.get("/api/v1/incidents", params={"q": "_"})
+    assert resp.json()["total"] == 0

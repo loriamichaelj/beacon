@@ -7,8 +7,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.errors import NotFoundError, UnprocessableError
 from app.models.incident import Incident
+from app.models.incident_event import IncidentEvent
+from app.repositories import incident_events as events_repo
 from app.repositories import incidents as repo
 from app.schemas.incident import IncidentCreate, IncidentRead, IncidentUpdate
+from app.schemas.incident_event import IncidentEventRead, NoteCreate
 from app.schemas.pagination import Page
 
 
@@ -99,6 +102,7 @@ async def list_incidents(
     severities: Sequence[str] | None,
     opened_after: datetime | None,
     opened_before: datetime | None,
+    q: str | None,
     sort: str,
     limit: int,
     offset: int,
@@ -110,6 +114,7 @@ async def list_incidents(
         severities=severities,
         opened_after=opened_after,
         opened_before=opened_before,
+        q=q,
         sort=sort,
         limit=limit,
         offset=offset,
@@ -132,6 +137,16 @@ async def create_incident(session: AsyncSession, payload: IncidentCreate) -> Inc
 
     data: dict[str, object] = payload.model_dump()
     incident = await repo.create_incident(session, data)
+    events_repo.add(
+        session,
+        IncidentEvent(
+            incident_id=incident.id,
+            kind="opened",
+            to_value=incident.severity,
+            created_at=incident.opened_at,
+        ),
+    )
+    await session.commit()
     row = await repo.get_incident(session, incident.id)
     assert row is not None
     return _to_read(*row)
@@ -146,6 +161,20 @@ async def update_incident(
     incident, service_name = row
 
     data: dict[str, object] = payload.model_dump(exclude_unset=True, exclude={"status"})
+    now = datetime.now(UTC)
+
+    # Timeline events commit in the same transaction as the change they record.
+    if payload.severity is not None and payload.severity != incident.severity:
+        events_repo.add(
+            session,
+            IncidentEvent(
+                incident_id=incident.id,
+                kind="severity_changed",
+                from_value=incident.severity,
+                to_value=payload.severity,
+                created_at=now,
+            ),
+        )
 
     if payload.status is not None and payload.status != incident.status:
         try:
@@ -155,10 +184,20 @@ async def update_incident(
                 current_resolved_at=incident.resolved_at,
                 current_reopen_count=incident.reopen_count,
                 new_status=payload.status,
-                now=datetime.now(UTC),
+                now=now,
             )
         except InvalidTransitionError as exc:
             raise UnprocessableError(str(exc)) from exc
+        events_repo.add(
+            session,
+            IncidentEvent(
+                incident_id=incident.id,
+                kind="status_changed",
+                from_value=incident.status,
+                to_value=transition.status,
+                created_at=now,
+            ),
+        )
         data["status"] = transition.status
         data["mitigated_at"] = transition.mitigated_at
         data["resolved_at"] = transition.resolved_at
@@ -174,3 +213,29 @@ async def delete_incident(session: AsyncSession, incident_id: UUID) -> None:
         raise NotFoundError(f"Incident {incident_id} not found.")
     incident, _service_name = row
     await repo.delete_incident(session, incident)
+
+
+def _event_to_read(event: IncidentEvent) -> IncidentEventRead:
+    return IncidentEventRead.model_validate(event, from_attributes=True)
+
+
+async def list_events(
+    session: AsyncSession, incident_id: UUID, *, limit: int, offset: int
+) -> Page[IncidentEventRead]:
+    if await repo.get_incident(session, incident_id) is None:
+        raise NotFoundError(f"Incident {incident_id} not found.")
+    events, total = await events_repo.list_for_incident(
+        session, incident_id, limit=limit, offset=offset
+    )
+    return Page[IncidentEventRead](
+        items=[_event_to_read(e) for e in events], total=total, limit=limit, offset=offset
+    )
+
+
+async def add_note(
+    session: AsyncSession, incident_id: UUID, payload: NoteCreate
+) -> IncidentEventRead:
+    if await repo.get_incident(session, incident_id) is None:
+        raise NotFoundError(f"Incident {incident_id} not found.")
+    event = await events_repo.create_note(session, incident_id, payload.body)
+    return _event_to_read(event)

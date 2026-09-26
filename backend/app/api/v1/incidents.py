@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_session
 from app.errors import UnprocessableError
 from app.schemas.incident import IncidentCreate, IncidentRead, IncidentUpdate, Severity, Status
+from app.schemas.incident_event import IncidentEventRead, NoteCreate
 from app.schemas.pagination import Page
 from app.services import incidents as service_layer
 
@@ -39,6 +40,7 @@ async def list_incidents(
     severity: Annotated[list[Severity] | None, Query()] = None,
     opened_after: datetime | None = None,
     opened_before: datetime | None = None,
+    q: Annotated[str | None, Query(max_length=200)] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> Page[IncidentRead]:
@@ -49,6 +51,7 @@ async def list_incidents(
         severities=severity,
         opened_after=opened_after,
         opened_before=opened_before,
+        q=q,
         sort=sort,
         limit=limit,
         offset=offset,
@@ -79,3 +82,25 @@ async def update_incident(
 @router.delete("/{incident_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_incident(incident_id: UUID, session: SessionDep) -> None:
     await service_layer.delete_incident(session, incident_id)
+
+
+@router.get("/{incident_id}/events", response_model=Page[IncidentEventRead])
+async def list_incident_events(
+    incident_id: UUID,
+    session: SessionDep,
+    limit: Annotated[int, Query(ge=1, le=100)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> Page[IncidentEventRead]:
+    return await service_layer.list_events(session, incident_id, limit=limit, offset=offset)
+
+
+@router.post(
+    "/{incident_id}/events",
+    response_model=IncidentEventRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def add_incident_note(
+    incident_id: UUID, payload: NoteCreate, session: SessionDep
+) -> IncidentEventRead:
+    """Add a note to the timeline. Other event kinds are recorded by the server."""
+    return await service_layer.add_note(session, incident_id, payload)

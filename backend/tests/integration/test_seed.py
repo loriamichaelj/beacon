@@ -7,15 +7,24 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.config import get_settings
 from app.db import create_engine, create_session_factory
 from app.models.incident import Incident
+from app.models.incident_event import IncidentEvent
 from app.models.service import Service
 from scripts.seed import seed
 
 
-async def _counts(session_factory: async_sessionmaker[AsyncSession]) -> tuple[int, int]:
+async def _counts(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> tuple[int, int, int]:
     async with session_factory() as session:
         services = (await session.execute(select(func.count(Service.id)))).scalar_one()
         incidents = (await session.execute(select(func.count(Incident.id)))).scalar_one()
-    return services, incidents
+        # Every seeded incident gets exactly one "opened" event.
+        opened = (
+            await session.execute(
+                select(func.count(IncidentEvent.id)).where(IncidentEvent.kind == "opened")
+            )
+        ).scalar_one()
+    return services, incidents, opened
 
 
 def test_seed_is_idempotent(monkeypatch: pytest.MonkeyPatch, migrated_dsn: str) -> None:
@@ -28,9 +37,10 @@ def test_seed_is_idempotent(monkeypatch: pytest.MonkeyPatch, migrated_dsn: str) 
     engine = create_engine(get_settings())
     session_factory = create_session_factory(engine)
     try:
-        services_count, incidents_count = asyncio.run(_counts(session_factory))
+        services_count, incidents_count, opened_events = asyncio.run(_counts(session_factory))
     finally:
         asyncio.run(engine.dispose())
 
     assert services_count == 8
     assert incidents_count == 20
+    assert opened_events == 20

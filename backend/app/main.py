@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api import health
 from app.api.v1 import incidents as incidents_v1
 from app.api.v1 import services as services_v1
+from app.api.v1 import stats as stats_v1
 from app.config import get_settings
 from app.db import create_engine, create_session_factory
 from app.errors import register_exception_handlers
@@ -111,6 +112,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(services_v1.router, prefix="/api/v1")
     app.include_router(incidents_v1.router, prefix="/api/v1")
+    app.include_router(stats_v1.router, prefix="/api/v1")
 
     return app
 
