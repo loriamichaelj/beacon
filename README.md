@@ -1,7 +1,7 @@
 # Beacon
 
 Beacon is a three-tier web app for tracking **services** and the
-**incidents** raised against them, built and run on AWS EC2. It has a
+**incidents** raised against them, built to run on AWS EC2. It has a
 React UI with an Overview dashboard and a timeline on every incident, a
 versioned REST API in FastAPI, and PostgreSQL for storage.
 
@@ -15,8 +15,8 @@ access.
 | Branch | Holds |
 |---|---|
 | `main` | The GitHub Actions workflows only |
-| `dev` | The app, infrastructure, scripts, and docs. It's live on AWS. |
-| `stage`, `prod` | Promoted from `dev` by PR. Designed, but not provisioned yet. |
+| `dev` | The app, infrastructure, scripts, and docs |
+| `stage`, `prod` | Promoted from `dev` by PR |
 
 ## Stack
 
